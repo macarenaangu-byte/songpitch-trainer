@@ -1,0 +1,9 @@
+fma_metadata/
+training_data/
+*.mp3
+*.wav
+*.h5
+*.pkl
+node_modules/
+.DS_Store
+.env

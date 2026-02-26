@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SongPitch | Specialist Tagger</title>
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #0f172a; color: white; padding: 2rem; display: flex; flex-direction: column; align-items: center; min-height: 100vh; margin: 0; }
+        .container { width: 100%; max-width: 900px; }
+        .header { display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 2rem; }
+        h1 { margin: 0; letter-spacing: -1px; font-size: 2.5rem; color: #38bdf8; }
+        .btn-export { background: #10b981; color: white; border: none; padding: 0.8rem 1.5rem; border-radius: 8px; font-weight: 700; cursor: pointer; transition: 0.2s; }
+        .btn-export:hover { background: #059669; transform: translateY(-2px); }
+        .upload-area { border: 2px dashed #38bdf8; border-radius: 1rem; padding: 4rem; text-align: center; cursor: pointer; background: rgba(56, 189, 248, 0.05); margin-bottom: 2rem; }
+        .song-item { background: #1e293b; padding: 1.2rem; border-radius: 0.75rem; display: flex; justify-content: space-between; align-items: center; border: 1px solid #334155; margin-bottom: 0.75rem; }
+        .song-name { font-weight: 600; font-size: 1.1rem; color: #f8fafc; }
+        .tag-container { display: flex; gap: 0.75rem; }
+        
+        /* THE COLOR FIXES */
+        .tag { padding: 0.6rem 1.2rem; border-radius: 8px; font-size: 0.75rem; font-weight: 800; text-transform: uppercase; min-width: 110px; text-align: center; }
+        .tag-genre { background: #38bdf8; color: #0f172a; } /* Electric Blue */
+        .tag-mood { background: #6366f1; color: #ffffff; }  /* Deep Purple */
+        .tag-empty { background: transparent; color: #475569; border: 1px solid #334155; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>SongPitch <span style="font-weight: 200; color: #64748b;">Specialist</span></h1>
+                <p style="color: #94a3b8;">High-Accuracy Model (76%+) Active</p>
+            </div>
+            <button class="btn-export" onclick="downloadCSV()">⬇️ Export CSV</button>
+        </div>
+        <div class="upload-area" id="drop-zone"><h3>✨ Drop songs here</h3><input type="file" id="file-input" hidden multiple></div>
+        <div id="queue"></div>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('drop-zone');
+        const queue = document.getElementById('queue');
+        let sessionResults = [];
+
+        dropZone.ondragover = (e) => { e.preventDefault(); };
+        dropZone.ondrop = (e) => { e.preventDefault(); Array.from(e.dataTransfer.files).forEach(f => analyze(f)); };
+        dropZone.onclick = () => document.getElementById('file-input').click();
+        document.getElementById('file-input').onchange = (e) => Array.from(e.target.files).forEach(f => analyze(f));
+
+        async function analyze(file) {
+            const row = document.createElement('div');
+            row.className = 'song-item';
+            row.innerHTML = `<span class="song-name">${file.name}</span><div class="tag-container" id="tags-${file.name}"><div class="tag tag-empty">SCANNING...</div></div>`;
+            queue.prepend(row);
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('http://127.0.0.1:8000/predict', { method: 'POST', body: formData });
+                const data = await response.json();
+                
+                let g = "GENRE", m = "MOOD";
+
+                // High-Accuracy Label Splitter
+                data.predictions.forEach(p => {
+                    const clean = String(p).toLowerCase();
+                    if (clean.includes('genre_') && g === "GENRE") g = clean.replace('genre_', '').replace('_', ' ').toUpperCase();
+                    if (clean.includes('mood_') && m === "MOOD") m = clean.replace('mood_', '').replace('_', ' ').toUpperCase();
+                });
+
+                sessionResults.push({ filename: file.name, genre: g, mood: m });
+                document.getElementById(`tags-${file.name}`).innerHTML = `
+                    <div class="tag tag-genre">${g}</div>
+                    <div class="tag tag-mood">${m}</div>`;
+            } catch (err) {
+                document.getElementById(`tags-${file.name}`).innerHTML = `<div class="tag tag-empty" style="color:#ef4444">ERROR</div>`;
+            }
+        }
+
+        function downloadCSV() {
+            if (sessionResults.length === 0) return alert("Scan some songs first!");
+            let csv = "Filename,Genre,Mood\n";
+            sessionResults.forEach(r => { csv += `"${r.filename}","${r.genre}","${r.mood}"\n`; });
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.setAttribute('href', url);
+            a.setAttribute('download', 'songpitch_tags.csv');
+            a.click();
+        }
+    </script>
+</body>
+</html>
