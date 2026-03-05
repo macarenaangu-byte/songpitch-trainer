@@ -136,7 +136,7 @@ class BriefRequest(BaseModel):
     project_type: Optional[str] = None
 
 @app.post("/predict")
-@limiter.limit("10/minute")
+# @limiter.limit("10/minute")
 async def predict(request: Request, file: UploadFile = File(...)):
     validate_audio_upload(file)
     contents = await file.read()
@@ -210,7 +210,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
         return {"error": str(e)}
 
 @app.post("/transcribe")
-@limiter.limit("5/minute")
+# @limiter.limit("5/minute")
 async def transcribe(request: Request, file: UploadFile = File(...)):
     """Transcribe lyrics from an audio file using OpenAI Whisper."""
     validate_audio_upload(file)
@@ -241,7 +241,7 @@ async def transcribe(request: Request, file: UploadFile = File(...)):
 
 
 @app.post("/generate-brief")
-@limiter.limit("15/minute")
+# @limiter.limit("15/minute")
 async def generate_brief(request: Request, req: BriefRequest):
     if not req.notes or not req.notes.strip():
         return {"status": "error", "message": "Please provide some notes to generate a brief."}
