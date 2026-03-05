@@ -4,57 +4,71 @@ import numpy as np
 import pickle
 
 # --- SETTINGS ---
-DATA_PATH = '/Users/macarena.nadeau/Desktop/songpitch-trainer/training_data'
+DATA_PATH = 'training_data'  # Uses relative path for GitHub
 OUTPUT_FILE = 'audio_features.pkl'
 SAMPLE_RATE = 22050
-DURATION = 30 
+DURATION = 30
 
-def extract_features():
-    features = []
-    labels = []
-    filenames = []
 
-    print("🚀 Starting Deep-Dive Feature Extraction...")
+def extract_dual_features():
+    features, labels, filenames = [], [], []
 
-    # We look at every folder inside training_data
-    for category_folder in os.listdir(DATA_PATH):
-        category_path = os.path.join(DATA_PATH, category_folder)
-        
-        if os.path.isdir(category_path):
-            print(f"📂 Scanning Category: {category_folder}")
-            
-            # This "walks" through every subfolder inside (like genre_Jazz/Jazz/)
-            for root, dirs, files in os.walk(category_path):
-                for file in files:
-                    if file.endswith('.mp3'):
-                        file_path = os.path.join(root, file)
-                        
-                        try:
-                            y, sr = librosa.load(file_path, sr=SAMPLE_RATE, duration=DURATION)
+    print("🚀 Extracting Mel-Spectrogram Features...")
+    print(f"   Source: {os.path.abspath(DATA_PATH)}")
+    print(f"   Output: {OUTPUT_FILE}")
 
-                            target_length = DURATION * SAMPLE_RATE
-                            if len(y) < target_length:
-                                y = np.pad(y, (0, target_length - len(y)))
+    for category in sorted(os.listdir(DATA_PATH)):
+        cat_path = os.path.join(DATA_PATH, category)
+        if not os.path.isdir(cat_path):
+            continue
 
-                            mel_spec = librosa.feature.melspectrogram(y=y, sr=sr)
-                            mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
-                            
-                            features.append(mel_spec_db)
-                            # We use the top-level folder name as the label
-                            labels.append(category_folder)
-                            filenames.append(file)
-                            
-                            if len(features) % 10 == 0:
-                                print(f"✅ Total Found: {len(features)}", end="\r")
-                                
-                        except Exception as e:
-                            continue
+        # Only process genre_ and mood_ folders
+        if not (category.startswith('genre_') or category.startswith('mood_')):
+            continue
 
-    print(f"\n💾 Saving {len(features)} features to {OUTPUT_FILE}...")
+        cat_count = 0
+        for root, _, files in os.walk(cat_path):
+            for file in files:
+                if file.endswith('.mp3'):
+                    try:
+                        y, sr = librosa.load(os.path.join(root, file), sr=SAMPLE_RATE, duration=DURATION)
+                        # Ensure uniform length
+                        y = np.pad(y, (0, max(0, DURATION * SAMPLE_RATE - len(y))))[:DURATION * SAMPLE_RATE]
+
+                        mel = librosa.power_to_db(librosa.feature.melspectrogram(y=y, sr=sr))
+                        features.append(mel)
+
+                        # Single label per sample (the folder name, e.g., genre_Rock or mood_Happy)
+                        labels.append(category)
+                        filenames.append(file)
+                        cat_count += 1
+
+                        if len(features) % 10 == 0:
+                            print(f"✅ Total Found: {len(features)}", end="\r")
+                    except Exception:
+                        continue
+
+        print(f"   📁 {category}: {cat_count} tracks")
+
+    # Save in format compatible with improved_train.py
     with open(OUTPUT_FILE, 'wb') as f:
-        pickle.dump({'features': features, 'labels': labels, 'filenames': filenames}, f)
-    
-    print("✨ EXTRACTION COMPLETE!")
+        pickle.dump({
+            'features': features,
+            'labels': labels,
+            'filenames': filenames,
+        }, f)
+
+    # Summary
+    from collections import Counter
+    label_counts = Counter(labels)
+    genre_count = sum(v for k, v in label_counts.items() if k.startswith('genre_'))
+    mood_count = sum(v for k, v in label_counts.items() if k.startswith('mood_'))
+    print(f"\n✨ EXTRACTION COMPLETE!")
+    print(f"   {len(features)} total samples")
+    print(f"   {genre_count} genre samples across {sum(1 for k in label_counts if k.startswith('genre_'))} classes")
+    print(f"   {mood_count} mood samples across {sum(1 for k in label_counts if k.startswith('mood_'))} classes")
+    print(f"   Saved to: {OUTPUT_FILE}")
+
 
 if __name__ == "__main__":
-    extract_features()
+    extract_dual_features()

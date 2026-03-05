@@ -2,57 +2,43 @@ import pickle
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models, callbacks
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
-from sklearn.utils import class_weight
 
-# 1. LOAD DATA
-print("📂 Loading the refined library...")
-with open('audio_features.pkl', 'rb') as f:
+# 1. DATA PREP
+with open('dual_features.pkl', 'rb') as f:
     data = pickle.load(f)
 
-X = np.array(data['features'])[..., np.newaxis]
-X = np.repeat(X, 3, axis=-1)
+X = np.repeat(np.array(data['features'])[..., np.newaxis], 3, axis=-1)
 X = tf.image.resize(X, [128, 128]).numpy()
 
-encoder = LabelEncoder()
-y_encoded = encoder.fit_transform(data['labels'])
+# Separate encoders for Genres and Moods
+gen_enc, mood_enc = LabelEncoder(), LabelEncoder()
+y_gen = gen_enc.fit_transform(data['genres'])
+y_mood = mood_enc.fit_transform(data['moods'])
 
-# 2. SPLIT & WEIGHTS
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y_encoded, test_size=0.15, stratify=y_encoded, random_state=42
-)
+# 2. DUAL-HEAD ARCHITECTURE
+base = tf.keras.applications.MobileNetV2(input_shape=(128, 128, 3), include_top=False, weights='imagenet')
+base.trainable = True
 
-weights = class_weight.compute_class_weight('balanced', classes=np.unique(y_encoded), y=y_encoded)
-weight_dict = dict(enumerate(weights))
+inputs = layers.Input(shape=(128, 128, 3))
+x = base(inputs)
+x = layers.GlobalAveragePooling2D()(x)
+x = layers.Dropout(0.4)(x)
 
-# 3. BUILD THE BRAIN (Clean Version)
-base_model = tf.keras.applications.MobileNetV2(input_shape=(128, 128, 3), include_top=False, weights='imagenet')
-base_model.trainable = True 
+# Two independent prediction branches
+gen_out = layers.Dense(len(gen_enc.classes_), activation='softmax', name='genre')(x)
+mood_out = layers.Dense(len(mood_enc.classes_), activation='softmax', name='mood')(x)
 
-model = models.Sequential([
-    base_model,
-    layers.GlobalAveragePooling2D(),
-    layers.Dropout(0.4), # Slightly lower dropout to help accuracy climb faster
-    layers.Dense(512, activation='relu'),
-    layers.BatchNormalization(),
-    layers.Dropout(0.3),
-    layers.Dense(len(encoder.classes_), activation='softmax')
-])
+model = models.Model(inputs=inputs, outputs=[gen_out, mood_out])
 
-# 4. BALANCED COMPILER
-# Going back to a proven speed that won't get stuck at 7%
-model.compile(optimizer=tf.keras.optimizers.Adam(5e-5), 
+# 3. MULTI-LOSS COMPILER
+model.compile(optimizer=tf.keras.optimizers.Adam(5e-5),
               loss='sparse_categorical_crossentropy', metrics=['accuracy'])
 
-# 5. HIGH-PATIENCE CALLBACKS
-checkpoint = callbacks.ModelCheckpoint('song_pitch_model.h5', monitor='val_accuracy', save_best_only=True, mode='max')
-# Increased patience to 15 so it doesn't stop too early
-early_stop = callbacks.EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True)
+# 4. SAVE MODEL AND BOTH ENCODERS
+model.save('song_pitch_dual_model.h5')
+with open('encoders.pkl', 'wb') as f:
+    pickle.dump({'gen': gen_enc, 'mood': mood_enc}, f)
 
-# 6. TRAIN
-print(f"🚀 Final Accuracy Push on {len(encoder.classes_)} classes...")
-model.fit(X_train, y_train, epochs=60, validation_data=(X_test, y_test),
-          class_weight=weight_dict, callbacks=[checkpoint, early_stop])
-
-print("✨ Training Complete. Check the morning report for the new scores!")
+print("🚀 Specialist Training Started...")
+model.fit(X, [y_gen, y_mood], epochs=60, validation_split=0.15)

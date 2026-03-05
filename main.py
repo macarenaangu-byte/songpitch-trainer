@@ -1,21 +1,30 @@
-import os
-import json
-import shutil
-import pickle
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+import tensorflow as tf
+import tensorflow_hub as hub
 import librosa
 import numpy as np
-import tensorflow as tf
+import pickle
+import os
+import json
 from dotenv import load_dotenv
 from openai import OpenAI
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 
 load_dotenv()
 
-app = FastAPI()
+# Rate limiter — keyed by client IP
+limiter = Limiter(key_func=get_remote_address)
 
+app = FastAPI()
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Enable CORS for the dashboard
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,107 +32,76 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── Load dual models ────────────────────────────────────────────────────────
-print("📂 Loading models...")
+# ─── File upload validation constants ─────────────────────────────────────────
+MAX_UPLOAD_SIZE_MB = 50
+MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+ALLOWED_AUDIO_TYPES = {
+    "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/wave",
+    "audio/flac", "audio/x-flac", "audio/ogg", "audio/aac", "audio/mp4",
+    "audio/x-m4a", "audio/m4a",
+}
+ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".aac", ".m4a", ".mp4"}
 
-genre_model = tf.keras.models.load_model('genre_model.h5')
-with open('genre_model_encoder.pkl', 'rb') as f:
-    genre_encoder = pickle.load(f)
 
-mood_model = tf.keras.models.load_model('mood_model.h5')
-with open('mood_model_encoder.pkl', 'rb') as f:
+def validate_audio_upload(file: UploadFile):
+    """Validate uploaded file is an allowed audio format and within size limits."""
+    # Check file extension
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ALLOWED_AUDIO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type '{ext}'. Allowed: {', '.join(sorted(ALLOWED_AUDIO_EXTENSIONS))}"
+        )
+    # Check content type (if provided by client)
+    if file.content_type and file.content_type not in ALLOWED_AUDIO_TYPES and file.content_type != "application/octet-stream":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid content type '{file.content_type}'. Upload an audio file."
+        )
+
+# 1. LOAD YAMNET + GENRE/MOOD CLASSIFIERS
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# YAMNet: pre-trained audio embedding model (AudioSet, 521 classes)
+print("🔄 Loading YAMNet model...")
+yamnet_model = hub.load('https://tfhub.dev/google/yamnet/1')
+print("✅ YAMNet loaded")
+
+# Custom focal loss for loading saved models
+def focal_loss(gamma=2.0, alpha=0.25):
+    def loss_fn(y_true, y_pred):
+        y_pred = tf.clip_by_value(y_pred, 1e-7, 1 - 1e-7)
+        y_true_int = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
+        num_classes = tf.shape(y_pred)[-1]
+        y_true_one_hot = tf.one_hot(y_true_int, depth=num_classes)
+        cross_entropy = -y_true_one_hot * tf.math.log(y_pred)
+        weight = alpha * y_true_one_hot * tf.pow(1 - y_pred, gamma)
+        return tf.reduce_sum(weight * cross_entropy, axis=-1)
+    return loss_fn
+
+genre_model = tf.keras.models.load_model(
+    os.path.join(BASE_DIR, 'yamnet_genre_model.keras'),
+    custom_objects={'loss_fn': focal_loss(gamma=2.0, alpha=0.25)}
+)
+mood_model = tf.keras.models.load_model(
+    os.path.join(BASE_DIR, 'yamnet_mood_model.keras'),
+    custom_objects={'loss_fn': focal_loss(gamma=2.0, alpha=0.25)}
+)
+
+with open(os.path.join(BASE_DIR, 'yamnet_genre_model_encoder.pkl'), 'rb') as f:
+    gen_encoder = pickle.load(f)
+with open(os.path.join(BASE_DIR, 'yamnet_mood_model_encoder.pkl'), 'rb') as f:
     mood_encoder = pickle.load(f)
 
-print(f"✅ Genre model: {len(genre_encoder.classes_)} classes — {list(genre_encoder.classes_)}")
-print(f"✅ Mood model:  {len(mood_encoder.classes_)} classes — {list(mood_encoder.classes_)}")
+print(f"✅ Genre classifier: {len(gen_encoder.classes_)} classes")
+print(f"✅ Mood classifier: {len(mood_encoder.classes_)} classes")
 
-# Load exact normalization params from training (must match training preprocessing)
-with open('norm_params.pkl', 'rb') as f:
-    norm = pickle.load(f)
-NORM_MIN = norm['X_min']
-NORM_MAX = norm['X_max']
-print(f"📏 Normalization: min={NORM_MIN}, max={NORM_MAX}")
+# OpenAI client for AI Brief Writer
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+BRIEF_SYSTEM_PROMPT = """You are a music industry brief writer for SongPitch, a platform connecting composers with music executives.
 
-def preprocess_audio(file_path):
-    """Load audio, generate mel spectrogram, preprocess for MobileNetV2."""
-    y, sr = librosa.load(file_path, sr=22050, duration=30)
-    target_len = 30 * 22050
-    if len(y) < target_len:
-        y = np.pad(y, (0, target_len - len(y)))
-
-    mel_spec = librosa.feature.melspectrogram(y=y, sr=sr)
-    mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
-
-    # Shape for MobileNetV2: (1, 128, 128, 3)
-    X = mel_spec_db[np.newaxis, ..., np.newaxis]
-    X = np.repeat(X, 3, axis=-1)
-    X = tf.image.resize(X, [128, 128]).numpy()
-
-    # Normalize to [0, 255] then apply MobileNetV2 preprocessing (→ [-1, 1])
-    X = (X - NORM_MIN) / (NORM_MAX - NORM_MIN) * 255.0
-    X = np.clip(X, 0, 255)
-    X = tf.keras.applications.mobilenet_v2.preprocess_input(X)
-
-    return X
-
-
-@app.post("/predict")
-async def predict_audio(file: UploadFile = File(...)):
-    temp_path = f"temp_{file.filename}"
-    with open(temp_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    try:
-        X = preprocess_audio(temp_path)
-
-        # Genre prediction — top 3
-        genre_preds = genre_model.predict(X, verbose=0)[0]
-        genre_top = np.argsort(genre_preds)[-3:][::-1]
-        genre_labels = [str(genre_encoder.inverse_transform([i])[0]) for i in genre_top]
-        genre_confidences = [float(genre_preds[i]) for i in genre_top]
-
-        # Mood prediction — top 3
-        mood_preds = mood_model.predict(X, verbose=0)[0]
-        mood_top = np.argsort(mood_preds)[-3:][::-1]
-        mood_labels = [str(mood_encoder.inverse_transform([i])[0]) for i in mood_top]
-        mood_confidences = [float(mood_preds[i]) for i in mood_top]
-
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-
-        return {
-            "status": "success",
-            "genre": genre_labels[0],
-            "mood": mood_labels[0],
-            "genre_confidence": genre_confidences[0],
-            "mood_confidence": mood_confidences[0],
-            "genre_top3": [{"label": l, "confidence": c} for l, c in zip(genre_labels, genre_confidences)],
-            "mood_top3": [{"label": l, "confidence": c} for l, c in zip(mood_labels, mood_confidences)],
-            # Backward compatibility — combined list of top predictions
-            "predictions": genre_labels + mood_labels,
-        }
-
-    except Exception as e:
-        print(f"❌ ERROR: {str(e)}")
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ─── AI Brief Writer ─────────────────────────────────────────────────────────
-# Generates polished opportunity descriptions from rough notes using GPT-4o-mini
-
-openai_client = None
-if os.getenv("OPENAI_API_KEY"):
-    openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    print("✅ OpenAI client initialized for AI Brief Writer")
-else:
-    print("⚠️  No OPENAI_API_KEY found — AI Brief Writer disabled")
-
-BRIEF_SYSTEM_PROMPT = """You are a music industry brief writer for SongPitch, a professional platform connecting composers with music executives (film, TV, advertising, games).
-
-Your job: take rough notes from a music executive and generate a polished, professional opportunity description that will attract the right composers.
+Given rough notes from a music executive, generate a polished opportunity description and suggest appropriate genres, moods, and project type.
 
 AVAILABLE GENRES (use ONLY these exact names):
 Classical, Jazz, Electronic, Hip-Hop, Pop, Film Score, Ambient, R&B, Afrobeats, World Music, Musical Theatre, Rock, Country, Folk, Blues, Reggae, Latin, K-Pop, EDM, Indie
@@ -134,85 +112,178 @@ Uplifting, Melancholic, Energetic, Calm, Dark, Romantic, Epic, Playful, Aggressi
 PROJECT TYPES (use ONLY these exact names):
 Film, TV Series, Advertising, Trailer, Video Game, Podcast, Social Media, Other
 
-INSTRUCTIONS:
-1. Write a 2-4 sentence professional description based on the user's rough notes
-2. The description should be clear, specific, and attractive to composers
-3. Include key details: style, tempo feel, instrumentation hints, reference points
-4. Suggest 1-3 genres and 1-3 moods that best match the project
-5. Suggest the most appropriate project type
+RULES:
+1. Write a professional, engaging description (2-4 sentences) based on the notes
+2. Select 1-3 genres that best fit
+3. Select 1-3 moods that best fit
+4. Select exactly 1 project type
+5. Return ONLY valid JSON with no extra text
 
-Return ONLY valid JSON (no markdown, no code fences):
+Return format:
 {
-  "description": "Professional 2-4 sentence description",
-  "genres": ["Genre1", "Genre2"],
-  "moods": ["Mood1", "Mood2"],
-  "project_type": "ProjectType"
+  "description": "...",
+  "genres": ["...", "..."],
+  "moods": ["...", "..."],
+  "project_type": "..."
 }"""
 
+ALLOWED_GENRES = {"Classical", "Jazz", "Electronic", "Hip-Hop", "Pop", "Film Score", "Ambient", "R&B", "Afrobeats", "World Music", "Musical Theatre", "Rock", "Country", "Folk", "Blues", "Reggae", "Latin", "K-Pop", "EDM", "Indie"}
+ALLOWED_MOODS = {"Uplifting", "Melancholic", "Energetic", "Calm", "Dark", "Romantic", "Epic", "Playful", "Aggressive", "Dreamy", "Nostalgic", "Mysterious", "Triumphant", "Tense"}
 
 class BriefRequest(BaseModel):
     notes: str
     title: Optional[str] = None
     project_type: Optional[str] = None
 
-
-@app.post("/generate-brief")
-async def generate_brief(req: BriefRequest):
-    if not openai_client:
-        raise HTTPException(status_code=503, detail="AI Brief Writer not configured — missing OPENAI_API_KEY")
-
-    if not req.notes or len(req.notes.strip()) < 10:
-        raise HTTPException(status_code=400, detail="Please provide at least a short description of your project")
-
-    # Build user prompt with optional context
-    user_msg = req.notes
-    if req.title:
-        user_msg = f"Project title: {req.title}\n\n{user_msg}"
-    if req.project_type:
-        user_msg = f"{user_msg}\n\nProject type: {req.project_type}"
+@app.post("/predict")
+@limiter.limit("10/minute")
+async def predict(request: Request, file: UploadFile = File(...)):
+    validate_audio_upload(file)
+    contents = await file.read()
+    if len(contents) > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail=f"File too large. Maximum size is {MAX_UPLOAD_SIZE_MB}MB.")
+    temp_path = f"temp_{file.filename}"
+    with open(temp_path, "wb") as buffer:
+        buffer.write(contents)
 
     try:
-        print(f"✨ Generating brief from: {req.notes[:80]}...")
+        # 2. AUDIO PROCESSING — Load at 16kHz for YAMNet
+        y, sr = librosa.load(temp_path, sr=16000, duration=30)
 
+        # Ensure uniform length (30 sec at 16kHz = 480,000 samples)
+        target_length = 30 * 16000
+        if len(y) < target_length:
+            y = np.pad(y, (0, target_length - len(y)))
+        else:
+            y = y[:target_length]
+
+        # Normalize to [-1, 1]
+        y = y.astype(np.float32)
+        if np.abs(y).max() > 0:
+            y = y / max(np.abs(y).max(), 1.0)
+
+        # 3. YAMNET EMBEDDINGS — extract and mean-pool
+        scores, embeddings, spectrogram = yamnet_model(y)
+        embedding = np.mean(embeddings.numpy(), axis=0)  # (1024,)
+        X = embedding[np.newaxis, :]  # (1, 1024) for classifier input
+
+        # 4. SEPARATE PREDICTIONS
+        gen_preds = genre_model.predict(X)
+        mood_preds = mood_model.predict(X)
+
+        # Get top-2 genres with confidence scores
+        top2_gen = np.argsort(gen_preds[0])[-2:][::-1]
+        primary_genre = str(gen_encoder.inverse_transform([top2_gen[0]])[0])
+        secondary_genre = str(gen_encoder.inverse_transform([top2_gen[1]])[0])
+        primary_genre_conf = float(gen_preds[0][top2_gen[0]])
+        secondary_genre_conf = float(gen_preds[0][top2_gen[1]])
+
+        # Get best mood
+        best_mood_idx = np.argmax(mood_preds[0])
+        mood_result = str(mood_encoder.inverse_transform([best_mood_idx])[0])
+        mood_conf = float(mood_preds[0][best_mood_idx])
+
+        # Clean labels (Remove prefixes for the UI)
+        def clean_label(label):
+            return label.replace('genre_', '').replace('mood_', '').replace('_', ' ').upper()
+
+        clean_genre = clean_label(primary_genre)
+        clean_secondary = clean_label(secondary_genre)
+        clean_mood = clean_label(mood_result)
+
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+        return {
+            "predictions": [clean_genre, clean_mood],
+            "genre": clean_genre,
+            "genre_confidence": primary_genre_conf,
+            "secondary_genre": clean_secondary,
+            "secondary_genre_confidence": secondary_genre_conf,
+            "mood": clean_mood,
+            "mood_confidence": mood_conf,
+        }
+
+    except Exception as e:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        return {"error": str(e)}
+
+@app.post("/transcribe")
+@limiter.limit("5/minute")
+async def transcribe(request: Request, file: UploadFile = File(...)):
+    """Transcribe lyrics from an audio file using OpenAI Whisper."""
+    validate_audio_upload(file)
+    contents = await file.read()
+    if len(contents) > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail=f"File too large. Maximum size is {MAX_UPLOAD_SIZE_MB}MB.")
+    temp_path = f"temp_transcribe_{file.filename}"
+    with open(temp_path, "wb") as buffer:
+        buffer.write(contents)
+
+    try:
+        with open(temp_path, "rb") as audio_file:
+            transcript = openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="text",
+            )
+        lyrics = transcript.strip() if transcript else ""
+        # Filter out noise/empty transcriptions
+        if len(lyrics) < 10 or lyrics.lower() in ["", "you", "thank you", "thanks for watching"]:
+            lyrics = ""
+        return {"status": "success", "lyrics": lyrics}
+    except Exception as e:
+        return {"status": "error", "lyrics": "", "message": str(e)}
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+@app.post("/generate-brief")
+@limiter.limit("15/minute")
+async def generate_brief(request: Request, req: BriefRequest):
+    if not req.notes or not req.notes.strip():
+        return {"status": "error", "message": "Please provide some notes to generate a brief."}
+
+    user_message = f"Notes: {req.notes.strip()}"
+    if req.title:
+        user_message = f"Title: {req.title}\n{user_message}"
+    if req.project_type:
+        user_message += f"\nProject type hint: {req.project_type}"
+
+    try:
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": BRIEF_SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
+                {"role": "user", "content": user_message}
             ],
             temperature=0.7,
             max_tokens=500,
         )
 
-        raw = response.choices[0].message.content.strip()
+        content = response.choices[0].message.content.strip()
+        # Strip markdown code fences if present
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+            content = content.strip()
 
-        # Parse JSON response (handle possible markdown code fences)
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        result = json.loads(content)
 
-        result = json.loads(raw)
+        # Validate genres and moods against allowed lists
+        result["genres"] = [g for g in result.get("genres", []) if g in ALLOWED_GENRES]
+        result["moods"] = [m for m in result.get("moods", []) if m in ALLOWED_MOODS]
 
-        # Validate genres/moods are from our allowed lists
-        valid_genres = {'Classical', 'Jazz', 'Electronic', 'Hip-Hop', 'Pop', 'Film Score',
-                        'Ambient', 'R&B', 'Afrobeats', 'World Music', 'Musical Theatre',
-                        'Rock', 'Country', 'Folk', 'Blues', 'Reggae', 'Latin', 'K-Pop', 'EDM', 'Indie'}
-        valid_moods = {'Uplifting', 'Melancholic', 'Energetic', 'Calm', 'Dark', 'Romantic',
-                       'Epic', 'Playful', 'Aggressive', 'Dreamy', 'Nostalgic', 'Mysterious',
-                       'Triumphant', 'Tense'}
-        valid_types = {'Film', 'TV Series', 'Advertising', 'Trailer', 'Video Game',
-                       'Podcast', 'Social Media', 'Other'}
-
-        result['genres'] = [g for g in result.get('genres', []) if g in valid_genres][:3]
-        result['moods'] = [m for m in result.get('moods', []) if m in valid_moods][:3]
-        if result.get('project_type') not in valid_types:
-            result['project_type'] = 'Other'
-
-        print(f"✅ Brief generated — genres: {result['genres']}, moods: {result['moods']}")
         return {"status": "success", **result}
 
-    except json.JSONDecodeError as e:
-        print(f"⚠️ JSON parse error: {e}\nRaw response: {raw}")
-        raise HTTPException(status_code=500, detail="AI returned invalid format — please try again")
+    except json.JSONDecodeError:
+        return {"status": "error", "message": "AI returned invalid format. Please try again."}
     except Exception as e:
-        print(f"❌ Brief generation error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"status": "error", "message": str(e)}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)
