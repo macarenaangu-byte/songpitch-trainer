@@ -209,12 +209,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
 
 @app.post("/transcribe")
 # @limiter.limit("5/minute")
-async def transcribe(
-    request: Request, 
-    file: UploadFile = File(...),
-    prompt: Optional[str] = Form(None),     # 👇 Now accepting the frontend's instructions!
-    temperature: Optional[float] = Form(0.0) # 👇 Defaulting to 0.0 (no creativity)
-):
+async def transcribe(request: Request, file: UploadFile = File(...)):
     validate_audio_upload(file)
     contents = await file.read()
     if len(contents) > MAX_UPLOAD_SIZE_BYTES:
@@ -225,28 +220,17 @@ async def transcribe(
 
     try:
         with open(temp_path, "rb") as audio_file:
-            # Build the Whisper request dynamically
-            whisper_args = {
-                "model": "whisper-1",
-                "file": audio_file,
-                "response_format": "text",
-                "temperature": temperature  # Force it to be literal
-            }
-            # Attach our strict anti-hallucination prompt if the frontend sent one
-            if prompt:
-                whisper_args["prompt"] = prompt
-
-            transcript = openai_client.audio.transcriptions.create(**whisper_args)
-            
+            transcript = openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="text",
+                temperature=0.0, # 👈 Hardcoded so the AI is literal
+                prompt="This is a music track. If there are no clear human vocals, return an empty string. Do not invent subtitles, do not output watermarks, and do not use emojis." # 👈 Hardcoded guardrail
+            )
         lyrics = transcript.strip() if transcript else ""
         
-        # 🛡️ THE FINAL HALLUCINATION SHIELD
-        # Whisper loves to invent these specific phrases when it hears silence or jazz.
-        hallucination_blacklist = [
-            "you", "thank you", "thanks for watching", "sous-titrage", 
-            "subtitles", "amara.org", "mr beast", "hodori"
-        ]
-        
+        # 🛡️ The Final Blacklist Shield
+        hallucination_blacklist = ["you", "thank you", "thanks for watching", "sous-titrage", "subtitles", "amara.org", "mr beast", "hodori"]
         if len(lyrics) < 10 or any(bad_word in lyrics.lower() for bad_word in hallucination_blacklist):
             lyrics = ""
             
@@ -256,6 +240,7 @@ async def transcribe(
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+            
 @app.post("/generate-brief")
 # @limiter.limit("15/minute")
 async def generate_brief(request: Request, req: BriefRequest):
