@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -209,7 +209,12 @@ async def predict(request: Request, file: UploadFile = File(...)):
 
 @app.post("/transcribe")
 # @limiter.limit("5/minute")
-async def transcribe(request: Request, file: UploadFile = File(...)):
+async def transcribe(
+    request: Request, 
+    file: UploadFile = File(...),
+    prompt: Optional[str] = Form(None),     # 👇 Now accepting the frontend's instructions!
+    temperature: Optional[float] = Form(0.0) # 👇 Defaulting to 0.0 (no creativity)
+):
     validate_audio_upload(file)
     contents = await file.read()
     if len(contents) > MAX_UPLOAD_SIZE_BYTES:
@@ -220,21 +225,37 @@ async def transcribe(request: Request, file: UploadFile = File(...)):
 
     try:
         with open(temp_path, "rb") as audio_file:
-            transcript = openai_client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                response_format="text",
-            )
+            # Build the Whisper request dynamically
+            whisper_args = {
+                "model": "whisper-1",
+                "file": audio_file,
+                "response_format": "text",
+                "temperature": temperature  # Force it to be literal
+            }
+            # Attach our strict anti-hallucination prompt if the frontend sent one
+            if prompt:
+                whisper_args["prompt"] = prompt
+
+            transcript = openai_client.audio.transcriptions.create(**whisper_args)
+            
         lyrics = transcript.strip() if transcript else ""
-        if len(lyrics) < 10 or lyrics.lower() in ["", "you", "thank you", "thanks for watching"]:
+        
+        # 🛡️ THE FINAL HALLUCINATION SHIELD
+        # Whisper loves to invent these specific phrases when it hears silence or jazz.
+        hallucination_blacklist = [
+            "you", "thank you", "thanks for watching", "sous-titrage", 
+            "subtitles", "amara.org", "mr beast", "hodori"
+        ]
+        
+        if len(lyrics) < 10 or any(bad_word in lyrics.lower() for bad_word in hallucination_blacklist):
             lyrics = ""
+            
         return {"status": "success", "lyrics": lyrics}
     except Exception as e:
         return {"status": "error", "lyrics": "", "message": str(e)}
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
-
 @app.post("/generate-brief")
 # @limiter.limit("15/minute")
 async def generate_brief(request: Request, req: BriefRequest):
