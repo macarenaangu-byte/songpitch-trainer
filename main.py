@@ -182,12 +182,65 @@ async def predict(request: Request, file: UploadFile = File(...)):
         mood_result = str(mood_encoder.inverse_transform([best_mood_idx])[0])
         mood_conf = float(mood_preds[0][best_mood_idx])
 
-        def clean_label(label):
-            return label.replace('genre_', '').replace('mood_', '').replace('_', ' ').upper()
+        # Map raw model labels → exact GENRE_OPTIONS / MOOD_OPTIONS display strings.
+        # "Orchestral" maps to "Classical" — closest app genre to the training label.
+        # "Alternative" maps to "Indie" — not a separate option in the app.
+        # All others map 1:1 with correct Title Case so they match <select> option values.
+        GENRE_MAP = {
+            "orchestral":   "Classical",
+            "film_score":   "Film Score",
+            "world_music":  "World Music",
+            "hip-hop":      "Hip-Hop",
+            "r&b":          "R&B",
+            "edm":          "EDM",
+            "k-pop":        "K-Pop",
+            "alternative":  "Indie",
+            "electronic":   "Electronic",
+            "jazz":         "Jazz",
+            "pop":          "Pop",
+            "ambient":      "Ambient",
+            "afrobeats":    "Afrobeats",
+            "rock":         "Rock",
+            "country":      "Country",
+            "folk":         "Folk",
+            "blues":        "Blues",
+            "reggae":       "Reggae",
+            "latin":        "Latin",
+            "indie":        "Indie",
+        }
+        MOOD_MAP = {
+            "aggressive":   "Aggressive",
+            "atmospheric":  "Dreamy",
+            "calm":         "Calm",
+            "dark":         "Dark",
+            "energetic":    "Energetic",
+            "epic":         "Epic",
+            "happy":        "Uplifting",
+            "melancholic":  "Melancholic",
+            "mysterious":   "Mysterious",
+            "nostalgic":    "Nostalgic",
+            "playful":      "Playful",
+            "triumphant":   "Triumphant",
+            "romantic":     "Romantic",
+            "tense":        "Tense",
+            "uplifting":    "Uplifting",
+            "dreamy":       "Dreamy",
+        }
 
-        clean_genre = clean_label(primary_genre)
-        clean_secondary = clean_label(secondary_genre)
-        clean_mood = clean_label(mood_result)
+        def normalize_genre(label):
+            raw = label.replace('genre_', '').replace('_', '-').lower().replace('-', '_')
+            # Try both hyphen and underscore variants
+            key = label.replace('genre_', '').replace('_', '-').lower()
+            key_under = label.replace('genre_', '').lower()
+            return GENRE_MAP.get(key_under) or GENRE_MAP.get(key) or label.replace('genre_', '').replace('_', ' ').title()
+
+        def normalize_mood(label):
+            key = label.replace('mood_', '').lower()
+            return MOOD_MAP.get(key) or label.replace('mood_', '').replace('_', ' ').title()
+
+        clean_genre = normalize_genre(primary_genre)
+        clean_secondary = normalize_genre(secondary_genre)
+        clean_mood = normalize_mood(mood_result)
 
         if os.path.exists(temp_path):
             os.remove(temp_path)
@@ -196,7 +249,8 @@ async def predict(request: Request, file: UploadFile = File(...)):
             "predictions": [clean_genre, clean_mood],
             "genre": clean_genre,
             "genre_confidence": primary_genre_conf,
-            "secondary_genre": clean_secondary,
+            "secondary_genre": clean_secondary,        # snake_case (legacy)
+            "secondaryGenre": clean_secondary,         # camelCase (used by PortfolioPage bulk upload)
             "secondary_genre_confidence": secondary_genre_conf,
             "mood": clean_mood,
             "mood_confidence": mood_conf,
