@@ -107,7 +107,7 @@ BRIEF_SYSTEM_PROMPT = """You are a music industry brief writer for SongPitch, a 
 Given rough notes from a music executive, generate a polished opportunity description and suggest appropriate genres, moods, and project type.
 
 AVAILABLE GENRES (use ONLY these exact names):
-Classical, Jazz, Electronic, Hip-Hop, Pop, Film Score, Ambient, R&B, Afrobeats, World Music, Musical Theatre, Rock, Country, Folk, Blues, Reggae, Latin, K-Pop, EDM, Indie
+Classical, Jazz, Electronic, Hip-Hop, Pop, Film Score, Ambient, R&B, Afrobeats, World Music, Musical Theatre, Rock, Country, Folk, Blues, Reggae, Latin, K-Pop, EDM, Indie, Gospel, Lo-Fi, Corporate, Cinematic, Children's, Funk/Soul, Trap, New Age, Acoustic, House, Metal
 
 AVAILABLE MOODS (use ONLY these exact names):
 Uplifting, Melancholic, Energetic, Calm, Dark, Romantic, Epic, Playful, Aggressive, Dreamy, Nostalgic, Mysterious, Triumphant, Tense
@@ -130,7 +130,7 @@ Return format:
   "project_type": "..."
 }"""
 
-ALLOWED_GENRES = {"Classical", "Jazz", "Electronic", "Hip-Hop", "Pop", "Film Score", "Ambient", "R&B", "Afrobeats", "World Music", "Musical Theatre", "Rock", "Country", "Folk", "Blues", "Reggae", "Latin", "K-Pop", "EDM", "Indie"}
+ALLOWED_GENRES = {"Classical", "Jazz", "Electronic", "Hip-Hop", "Pop", "Film Score", "Ambient", "R&B", "Afrobeats", "World Music", "Musical Theatre", "Rock", "Country", "Folk", "Blues", "Reggae", "Latin", "K-Pop", "EDM", "Indie", "Gospel", "Lo-Fi", "Corporate", "Cinematic", "Children's", "Funk/Soul", "Trap", "New Age", "Acoustic", "House", "Metal"}
 ALLOWED_MOODS = {"Uplifting", "Melancholic", "Energetic", "Calm", "Dark", "Romantic", "Epic", "Playful", "Aggressive", "Dreamy", "Nostalgic", "Mysterious", "Triumphant", "Tense"}
 
 class BriefRequest(BaseModel):
@@ -187,37 +187,46 @@ async def predict(request: Request, file: UploadFile = File(...)):
         # "Alternative" maps to "Indie" — not a separate option in the app.
         # All others map 1:1 with correct Title Case so they match <select> option values.
         GENRE_MAP = {
-            # Legacy trained labels
-            "orchestral":        "Classical",
-            "film_score":        "Film Score",
-            "world_music":       "World Music",
-            "hip-hop":           "Hip-Hop",
-            "r&b":               "R&B",
-            "edm":               "EDM",
-            "k-pop":             "K-Pop",
-            "alternative":       "Indie",
-            "electronic":        "Electronic",
+            # Core genre labels (folder name → display name)
+            "classical":         "Classical",
             "jazz":              "Jazz",
+            "electronic":        "Electronic",
+            "hip-hop":           "Hip-Hop",
+            "hip_hop":           "Hip-Hop",
             "pop":               "Pop",
+            "film_score":        "Film Score",
             "ambient":           "Ambient",
+            "r&b":               "R&B",
             "afrobeats":         "Afrobeats",
+            "world_music":       "World Music",
+            "musical_theatre":   "Musical Theatre",
             "rock":              "Rock",
             "country":           "Country",
             "folk":              "Folk",
             "blues":             "Blues",
             "reggae":            "Reggae",
             "latin":             "Latin",
+            "k-pop":             "K-Pop",
+            "kpop":              "K-Pop",
+            "edm":               "EDM",
             "indie":             "Indie",
-            # New trained labels (folder name → display name)
-            "classical":         "Classical",
-            "musical_theatre":   "Musical Theatre",
             "gospel":            "Gospel",
             "lo_fi":             "Lo-Fi",
             "lo-fi":             "Lo-Fi",
             "corporate":         "Corporate",
             "cinematic":         "Cinematic",
             "childrens":         "Children's",
-            "kpop":              "K-Pop",
+            # Phase 2 new genres
+            "funk_soul":         "Funk/Soul",
+            "funk/soul":         "Funk/Soul",
+            "trap":              "Trap",
+            "new_age":           "New Age",
+            "acoustic":          "Acoustic",
+            "house":             "House",
+            "metal":             "Metal",
+            # Legacy labels kept for backwards compatibility
+            "orchestral":        "Classical",
+            "alternative":       "Indie",
         }
         MOOD_MAP = {
             "aggressive":   "Aggressive",
