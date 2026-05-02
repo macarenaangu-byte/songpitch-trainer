@@ -107,7 +107,7 @@ BRIEF_SYSTEM_PROMPT = """You are a music industry brief writer for SongPitch, a 
 Given rough notes from a music executive, generate a polished opportunity description and suggest appropriate genres, moods, and project type.
 
 AVAILABLE GENRES (use ONLY these exact names):
-Classical, Jazz, Electronic, Hip-Hop, Pop, Film Score, Ambient, R&B, Afrobeats, World Music, Musical Theatre, Rock, Country, Folk, Blues, Reggae, Latin, K-Pop, EDM, Indie, Gospel, Lo-Fi, Corporate, Cinematic, Children's, Funk/Soul, Trap, New Age, Acoustic, House, Metal
+Classical, Jazz, Electronic, Hip-Hop, Pop, Film Score, Ambient, R&B, Afrobeats, World Music, Musical Theatre, Rock, Country, Folk, Blues, Reggae, Latin, K-Pop, EDM, Indie, Gospel, Lo-Fi, Corporate, Cinematic, Children's, Funk/Soul, Trap, New Age, Acoustic, House, Metal, Bachata, Cumbia, Merengue, Tango, Flamenco, Trap Latino, Reggaetón, Dancehall, Techno, Trance, Drum & Bass, Dubstep, Synthwave, Punk, Hard Rock, Alternative Rock, Grunge, Progressive Rock, Opera, Baroque, HyperPop, Urbano
 
 AVAILABLE MOODS (use ONLY these exact names):
 Uplifting, Melancholic, Energetic, Calm, Dark, Romantic, Epic, Playful, Aggressive, Dreamy, Nostalgic, Mysterious, Triumphant, Tense
@@ -130,7 +130,7 @@ Return format:
   "project_type": "..."
 }"""
 
-ALLOWED_GENRES = {"Classical", "Jazz", "Electronic", "Hip-Hop", "Pop", "Film Score", "Ambient", "R&B", "Afrobeats", "World Music", "Musical Theatre", "Rock", "Country", "Folk", "Blues", "Reggae", "Latin", "K-Pop", "EDM", "Indie", "Gospel", "Lo-Fi", "Corporate", "Cinematic", "Children's", "Funk/Soul", "Trap", "New Age", "Acoustic", "House", "Metal"}
+ALLOWED_GENRES = {"Classical", "Jazz", "Electronic", "Hip-Hop", "Pop", "Film Score", "Ambient", "R&B", "Afrobeats", "World Music", "Musical Theatre", "Rock", "Country", "Folk", "Blues", "Reggae", "Latin", "K-Pop", "EDM", "Indie", "Gospel", "Lo-Fi", "Corporate", "Cinematic", "Children's", "Funk/Soul", "Trap", "New Age", "Acoustic", "House", "Metal", "Bachata", "Cumbia", "Merengue", "Tango", "Flamenco", "Trap Latino", "Reggaetón", "Dancehall", "Techno", "Trance", "Drum & Bass", "Dubstep", "Synthwave", "Punk", "Hard Rock", "Alternative Rock", "Grunge", "Progressive Rock", "Opera", "Baroque", "HyperPop", "Urbano"}
 ALLOWED_MOODS = {"Uplifting", "Melancholic", "Energetic", "Calm", "Dark", "Romantic", "Epic", "Playful", "Aggressive", "Dreamy", "Nostalgic", "Mysterious", "Triumphant", "Tense"}
 
 class BriefRequest(BaseModel):
@@ -224,6 +224,39 @@ async def predict(request: Request, file: UploadFile = File(...)):
             "acoustic":          "Acoustic",
             "house":             "House",
             "metal":             "Metal",
+            # Phase 3 — Latin sub-genres
+            "bachata":           "Bachata",
+            "cumbia":            "Cumbia",
+            "merengue":          "Merengue",
+            "tango":             "Tango",
+            "flamenco":          "Flamenco",
+            "trap_latino":       "Trap Latino",
+            "trap-latino":       "Trap Latino",
+            "reggaeton":         "Reggaetón",
+            "reggaetón":         "Reggaetón",
+            "dancehall":         "Dancehall",
+            # Phase 3 — Electronic sub-genres
+            "techno":            "Techno",
+            "trance":            "Trance",
+            "drum_and_bass":     "Drum & Bass",
+            "drum-and-bass":     "Drum & Bass",
+            "dubstep":           "Dubstep",
+            "synthwave":         "Synthwave",
+            # Phase 3 — Rock / Alt sub-genres
+            "punk":              "Punk",
+            "hard_rock":         "Hard Rock",
+            "hard-rock":         "Hard Rock",
+            "alternative_rock":  "Alternative Rock",
+            "alternative-rock":  "Alternative Rock",
+            "grunge":            "Grunge",
+            "progressive_rock":  "Progressive Rock",
+            "progressive-rock":  "Progressive Rock",
+            # Phase 3 — Classical sub-genres
+            "opera":             "Opera",
+            "baroque":           "Baroque",
+            # Phase 3 — Urban
+            "hyperpop":          "HyperPop",
+            "urbano":            "Urbano",
             # Legacy labels kept for backwards compatibility
             "orchestral":        "Classical",
             "alternative":       "Indie",
