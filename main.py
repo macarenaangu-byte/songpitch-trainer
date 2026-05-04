@@ -58,11 +58,21 @@ def validate_audio_upload(file: UploadFile):
 
 # 1. GLOBAL VARIABLES FOR AI MODELS
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-yamnet_model = None
-genre_model = None
-mood_model = None
-gen_encoder = None
-mood_encoder = None
+yamnet_model   = None
+mood_model     = None
+mood_encoder   = None
+
+# Hierarchical genre models
+stage1_model   = None   # broad category classifier (10 categories)
+stage1_encoder = None
+stage2_models  = {}     # {category_name: Keras model}
+stage2_encoders = {}    # {category_name: LabelEncoder}
+
+STAGE2_CATEGORIES = [
+    'Latin', 'Electronic', 'Rock_Metal', 'Classical_Cinematic',
+    'HipHop_Urban', 'Pop_Indie', 'Folk_Country_Roots', 'Jazz_Blues',
+    'Ambient_Chill', 'Theatrical',
+]
 
 def focal_loss(gamma=2.0, alpha=0.25):
     def loss_fn(y_true, y_pred):
@@ -78,25 +88,42 @@ def focal_loss(gamma=2.0, alpha=0.25):
 # 🔥 THIS IS THE FIX: Load models AFTER the server port opens
 @app.on_event("startup")
 async def load_all_models():
-    global yamnet_model, genre_model, mood_model, gen_encoder, mood_encoder
+    global yamnet_model, mood_model, mood_encoder
+    global stage1_model, stage1_encoder, stage2_models, stage2_encoders
     print("🚪 Port is open! Now loading AI brains in the background...")
-    
+
     yamnet_model = hub.load('https://tfhub.dev/google/yamnet/1')
-    
-    genre_model = tf.keras.models.load_model(
-        os.path.join(BASE_DIR, 'yamnet_genre_model.keras'),
-        custom_objects={'loss_fn': focal_loss(gamma=2.0, alpha=0.25)}
-    )
+
+    # ── Mood model (unchanged) ──
     mood_model = tf.keras.models.load_model(
-        os.path.join(BASE_DIR, 'yamnet_mood_model.keras'),
+        os.path.join(BASE_DIR, 'yamnet_mood_model.h5'),
         custom_objects={'loss_fn': focal_loss(gamma=2.0, alpha=0.25)}
     )
-    
-    with open(os.path.join(BASE_DIR, 'yamnet_genre_model_encoder.pkl'), 'rb') as f:
-        gen_encoder = pickle.load(f)
     with open(os.path.join(BASE_DIR, 'yamnet_mood_model_encoder.pkl'), 'rb') as f:
         mood_encoder = pickle.load(f)
-        
+
+    # ── Hierarchical genre models ──
+    stage1_model = tf.keras.models.load_model(
+        os.path.join(BASE_DIR, 'stage1_model.h5'),
+        custom_objects={'loss_fn': focal_loss(gamma=2.0, alpha=0.25)}
+    )
+    with open(os.path.join(BASE_DIR, 'stage1_model_encoder.pkl'), 'rb') as f:
+        stage1_encoder = pickle.load(f)
+
+    for cat in STAGE2_CATEGORIES:
+        model_path   = os.path.join(BASE_DIR, f'stage2_{cat}_model.h5')
+        encoder_path = os.path.join(BASE_DIR, f'stage2_{cat}_model_encoder.pkl')
+        if os.path.exists(model_path):
+            stage2_models[cat] = tf.keras.models.load_model(
+                model_path,
+                custom_objects={'loss_fn': focal_loss(gamma=2.0, alpha=0.25)}
+            )
+        if os.path.exists(encoder_path):
+            with open(encoder_path, 'rb') as f:
+                stage2_encoders[cat] = pickle.load(f)
+
+    loaded_s2 = sum(1 for cat in STAGE2_CATEGORIES if cat in stage2_models)
+    print(f"✅ Hierarchical genre: Stage 1 + {loaded_s2}/{len(STAGE2_CATEGORIES)} Stage 2 models loaded")
     print("✅ All AI Brains successfully loaded and ready for traffic!")
 
 # OpenAI client for AI Brief Writer
@@ -142,7 +169,7 @@ class BriefRequest(BaseModel):
 # 🔥 THIS IS THE FIX: Disabled limiter to prevent Typing crash
 # @limiter.limit("10/minute")
 async def predict(request: Request, file: UploadFile = File(...)):
-    if yamnet_model is None:
+    if yamnet_model is None or stage1_model is None:
         raise HTTPException(status_code=503, detail="AI is still warming up. Try again in 30 seconds!")
         
     validate_audio_upload(file)
@@ -169,14 +196,49 @@ async def predict(request: Request, file: UploadFile = File(...)):
         embedding = np.mean(embeddings.numpy(), axis=0)  
         X = embedding[np.newaxis, :]  
 
-        gen_preds = genre_model.predict(X)
         mood_preds = mood_model.predict(X)
 
-        top2_gen = np.argsort(gen_preds[0])[-2:][::-1]
-        primary_genre = str(gen_encoder.inverse_transform([top2_gen[0]])[0])
-        secondary_genre = str(gen_encoder.inverse_transform([top2_gen[1]])[0])
-        primary_genre_conf = float(gen_preds[0][top2_gen[0]])
-        secondary_genre_conf = float(gen_preds[0][top2_gen[1]])
+        # ── Two-stage genre prediction ──────────────────────────────────────
+        # Stage 1: broad category
+        cat_preds        = stage1_model.predict(X)
+        top2_cat         = np.argsort(cat_preds[0])[-2:][::-1]
+        predicted_cat    = str(stage1_encoder.inverse_transform([top2_cat[0]])[0])
+        runner_up_cat    = str(stage1_encoder.inverse_transform([top2_cat[1]])[0])
+        stage1_conf      = float(cat_preds[0][top2_cat[0]])
+
+        # Stage 2: specific genre within the predicted category
+        s2_model   = stage2_models.get(predicted_cat)
+        s2_encoder = stage2_encoders.get(predicted_cat)
+
+        if s2_model is not None and s2_encoder is not None:
+            s2_preds = s2_model.predict(X)
+            top2_gen = np.argsort(s2_preds[0])[-2:][::-1]
+            primary_genre        = str(s2_encoder.inverse_transform([top2_gen[0]])[0])
+            secondary_genre      = str(s2_encoder.inverse_transform([top2_gen[1]])[0])
+            primary_genre_conf   = float(s2_preds[0][top2_gen[0]]) * stage1_conf
+            secondary_genre_conf = float(s2_preds[0][top2_gen[1]]) * stage1_conf
+        elif s2_encoder is not None:
+            # Single-genre category: trivially correct, return the only genre
+            primary_genre        = str(s2_encoder.classes_[0])
+            secondary_genre      = primary_genre
+            primary_genre_conf   = stage1_conf
+            secondary_genre_conf = stage1_conf
+        else:
+            # Fallback: use runner-up category's top genre if stage2 model unavailable
+            s2_fb_model   = stage2_models.get(runner_up_cat)
+            s2_fb_encoder = stage2_encoders.get(runner_up_cat)
+            if s2_fb_model is not None and s2_fb_encoder is not None:
+                s2_fb_preds  = s2_fb_model.predict(X)
+                fb_top_idx   = int(np.argmax(s2_fb_preds[0]))
+                primary_genre        = str(s2_fb_encoder.inverse_transform([fb_top_idx])[0])
+                secondary_genre      = primary_genre
+                primary_genre_conf   = float(cat_preds[0][top2_cat[1]])
+                secondary_genre_conf = primary_genre_conf
+            else:
+                primary_genre        = f"genre_{predicted_cat}"
+                secondary_genre      = primary_genre
+                primary_genre_conf   = stage1_conf
+                secondary_genre_conf = stage1_conf
 
         best_mood_idx = np.argmax(mood_preds[0])
         mood_result = str(mood_encoder.inverse_transform([best_mood_idx])[0])
