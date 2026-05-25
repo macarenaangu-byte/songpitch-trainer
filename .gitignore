@@ -2,8 +2,23 @@ fma_metadata/
 training_data/
 *.mp3
 *.wav
-*.h5
-*.pkl
 node_modules/
 .DS_Store
 .env
+
+# Large feature/training files — never commit these
+discogs_features.pkl
+discogs_extraction_checkpoint.pkl
+audio_features.pkl
+
+# Old/unused large models
+flat_genre_model.h5
+song_pitch_model.h5
+song_pitch_model_best.h5
+genre_model.h5
+mood_model.h5
+yamnet_genre_model.h5
+
+# Log files
+*.log
+*.txt
