@@ -58,21 +58,44 @@ def validate_audio_upload(file: UploadFile):
 
 # 1. GLOBAL VARIABLES FOR AI MODELS
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-yamnet_model   = None
-mood_model     = None
-mood_encoder   = None
+yamnet_model    = None
+mood_model      = None
+mood_encoder    = None
+feature_scaler  = None   # StandardScaler fitted on training set
 
 # Hierarchical genre models
-stage1_model   = None   # broad category classifier (10 categories)
-stage1_encoder = None
-stage2_models  = {}     # {category_name: Keras model}
-stage2_encoders = {}    # {category_name: LabelEncoder}
+stage1_model    = None   # broad category classifier (10 categories)
+stage1_encoder  = None
+stage2_models   = {}     # {category_name: Keras model}
+stage2_encoders = {}     # {category_name: LabelEncoder}
 
 STAGE2_CATEGORIES = [
     'Latin', 'Electronic', 'Rock_Metal', 'Classical_Cinematic',
     'HipHop_Urban', 'Pop_Indie', 'Folk_Country_Roots', 'Jazz_Blues',
     'Ambient_Chill', 'Theatrical',
 ]
+
+# Discogs TF1 frozen graph (loaded at startup)
+discogs_session      = None
+discogs_input_tensor = None
+discogs_embed_tensor = None
+
+# Librosa constants — must match extract_discogs_features.py exactly
+SR_LIBROSA  = 22050
+SR_DISCOGS  = 16000
+SR_YAMNET   = 16000   # kept for mood model (YAMNet still used for mood)
+N_MFCC      = 20
+HOP_LENGTH  = 512
+
+# Discogs-EfficientNet mel-patch constants — must match extract_discogs_features.py exactly
+N_FFT_D      = 512
+HOP_LEN_D    = 256
+N_MELS_D     = 96
+FMIN_D       = 0
+FMAX_D       = 8000
+PATCH_FRAMES = 128
+PATCH_HOP    = 64
+BATCH_SIZE_D = 64
 
 def focal_loss(gamma=2.0, alpha=0.25):
     def loss_fn(y_true, y_pred):
@@ -85,27 +108,89 @@ def focal_loss(gamma=2.0, alpha=0.25):
         return tf.reduce_sum(weight * cross_entropy, axis=-1)
     return loss_fn
 
+def compute_mel_patches_discogs(y16: np.ndarray) -> np.ndarray:
+    """Compute log-mel spectrogram patches matching Essentia's EffNet input spec.
+
+    Spec: n_fft=512, hop=256, n_mels=96, fmin=0, fmax=8000, power=2
+          → unit-sum normalise each frame → natural log compress
+          → overlapping [128-frame × 96-mel] patches with 50% overlap
+
+    Returns float32 array of shape (N_patches, PATCH_FRAMES, N_MELS).
+    """
+    mel = librosa.feature.melspectrogram(
+        y=y16, sr=SR_DISCOGS,
+        n_fft=N_FFT_D, hop_length=HOP_LEN_D,
+        n_mels=N_MELS_D, fmin=FMIN_D, fmax=FMAX_D,
+        power=2.0,
+    )   # (96, T)
+    col_sums = mel.sum(axis=0, keepdims=True)
+    mel = mel / np.maximum(col_sums, 1e-10)   # unit-sum normalise each frame
+    mel = np.log(mel + 1e-9)                  # natural log compression
+    mel = mel.T.astype(np.float32)            # (T, 96)
+    patches = []
+    for start in range(0, len(mel) - PATCH_FRAMES + 1, PATCH_HOP):
+        patches.append(mel[start:start + PATCH_FRAMES])   # (128, 96)
+    return np.array(patches, dtype=np.float32) if patches else None   # (N, 128, 96)
+
+
+def run_discogs_inference(patches: np.ndarray) -> np.ndarray:
+    """Run Discogs-EffNet on patches, return embeddings (N_patches, 1280).
+
+    Pads last batch to BATCH_SIZE_D=64 (required by the frozen graph).
+    """
+    all_emb = []
+    for i in range(0, len(patches), BATCH_SIZE_D):
+        batch  = patches[i:i + BATCH_SIZE_D]
+        actual = len(batch)
+        if actual < BATCH_SIZE_D:
+            pad   = np.zeros((BATCH_SIZE_D - actual, PATCH_FRAMES, N_MELS_D), dtype=np.float32)
+            batch = np.concatenate([batch, pad], axis=0)
+        emb = discogs_session.run(discogs_embed_tensor, {discogs_input_tensor: batch})  # (64, 1280)
+        all_emb.append(emb[:actual])   # drop padding rows
+    return np.concatenate(all_emb, axis=0)   # (N_patches, 1280)
+
+
 # 🔥 THIS IS THE FIX: Load models AFTER the server port opens
 @app.on_event("startup")
 async def load_all_models():
-    global yamnet_model, mood_model, mood_encoder
+    global yamnet_model, mood_model, mood_encoder, feature_scaler
     global stage1_model, stage1_encoder, stage2_models, stage2_encoders
+    global discogs_session, discogs_input_tensor, discogs_embed_tensor
     print("🚪 Port is open! Now loading AI brains in the background...")
 
+    # ── YAMNet (still used for mood prediction) ──
     yamnet_model = hub.load('https://tfhub.dev/google/yamnet/1')
 
-    # ── Mood model (unchanged) ──
+    # ── Discogs-EfficientNet frozen graph (used for genre feature extraction) ──
+    discogs_pb = os.path.join(BASE_DIR, 'discogs-effnet-bs64-1.pb')
+    discogs_graph = tf.Graph()
+    with discogs_graph.as_default():
+        graph_def = tf.compat.v1.GraphDef()
+        with open(discogs_pb, 'rb') as fh:
+            graph_def.ParseFromString(fh.read())
+        tf.import_graph_def(graph_def, name='')
+    discogs_session      = tf.compat.v1.Session(graph=discogs_graph)
+    discogs_input_tensor = discogs_graph.get_tensor_by_name('serving_default_melspectrogram:0')
+    discogs_embed_tensor = discogs_graph.get_tensor_by_name('PartitionedCall:1')
+    print(f"✅ Discogs-EfficientNet loaded from {discogs_pb}")
+
+    # ── Feature scaler (required — normalises 2641-dim Discogs features) ──
+    with open(os.path.join(BASE_DIR, 'feature_scaler.pkl'), 'rb') as f:
+        feature_scaler = pickle.load(f)
+
+    # ── Mood model (trained on 1024-dim YAMNet mean embeddings) ──
     mood_model = tf.keras.models.load_model(
         os.path.join(BASE_DIR, 'yamnet_mood_model.h5'),
-        custom_objects={'loss_fn': focal_loss(gamma=2.0, alpha=0.25)}
+        custom_objects={'loss_fn': focal_loss(gamma=2.0, alpha=0.25)},
+        compile=False,
     )
     with open(os.path.join(BASE_DIR, 'yamnet_mood_model_encoder.pkl'), 'rb') as f:
         mood_encoder = pickle.load(f)
 
-    # ── Hierarchical genre models ──
+    # ── Hierarchical genre models (trained on 2641-dim Discogs features) ──
     stage1_model = tf.keras.models.load_model(
         os.path.join(BASE_DIR, 'stage1_model.h5'),
-        custom_objects={'loss_fn': focal_loss(gamma=2.0, alpha=0.25)}
+        compile=False,
     )
     with open(os.path.join(BASE_DIR, 'stage1_model_encoder.pkl'), 'rb') as f:
         stage1_encoder = pickle.load(f)
@@ -116,14 +201,16 @@ async def load_all_models():
         if os.path.exists(model_path):
             stage2_models[cat] = tf.keras.models.load_model(
                 model_path,
-                custom_objects={'loss_fn': focal_loss(gamma=2.0, alpha=0.25)}
+                custom_objects={'loss_fn': focal_loss(gamma=2.0, alpha=0.25)},
+                compile=False,
             )
         if os.path.exists(encoder_path):
             with open(encoder_path, 'rb') as f:
                 stage2_encoders[cat] = pickle.load(f)
 
     loaded_s2 = sum(1 for cat in STAGE2_CATEGORIES if cat in stage2_models)
-    print(f"✅ Hierarchical genre: Stage 1 + {loaded_s2}/{len(STAGE2_CATEGORIES)} Stage 2 models loaded")
+    print(f"✅ Feature scaler loaded  (2641-dim normalisation)")
+    print(f"✅ Genre models: Stage 1 + {loaded_s2}/{len(STAGE2_CATEGORIES)} Stage 2 models loaded")
     print("✅ All AI Brains successfully loaded and ready for traffic!")
 
 # OpenAI client for AI Brief Writer
@@ -169,7 +256,7 @@ class BriefRequest(BaseModel):
 # 🔥 THIS IS THE FIX: Disabled limiter to prevent Typing crash
 # @limiter.limit("10/minute")
 async def predict(request: Request, file: UploadFile = File(...)):
-    if yamnet_model is None or stage1_model is None:
+    if yamnet_model is None or stage1_model is None or discogs_session is None:
         raise HTTPException(status_code=503, detail="AI is still warming up. Try again in 30 seconds!")
         
     validate_audio_upload(file)
@@ -181,64 +268,109 @@ async def predict(request: Request, file: UploadFile = File(...)):
         buffer.write(contents)
 
     try:
-        y, sr = librosa.load(temp_path, sr=16000, duration=30)
-        target_length = 30 * 16000
-        if len(y) < target_length:
-            y = np.pad(y, (0, target_length - len(y)))
+        # ── Load at 22050 Hz for librosa features ─────────────────────────────
+        DURATION = 30
+        y22, _ = librosa.load(temp_path, sr=SR_LIBROSA, duration=DURATION, mono=True)
+        target_22k = DURATION * SR_LIBROSA
+        if len(y22) < target_22k:
+            y22 = np.pad(y22, (0, target_22k - len(y22)))
         else:
-            y = y[:target_length]
+            y22 = y22[:target_22k]
+        peak = np.abs(y22).max()
+        if peak > 0:
+            y22 = y22 / peak
 
-        y = y.astype(np.float32)
-        if np.abs(y).max() > 0:
-            y = y / max(np.abs(y).max(), 1.0)
+        # ── Librosa features (must match extract_discogs_features.py exactly) ──
+        mfcc      = librosa.feature.mfcc(y=y22, sr=SR_LIBROSA, n_mfcc=N_MFCC, hop_length=HOP_LENGTH)
+        chroma    = librosa.feature.chroma_stft(y=y22, sr=SR_LIBROSA, hop_length=HOP_LENGTH)
+        contrast  = librosa.feature.spectral_contrast(y=y22, sr=SR_LIBROSA, hop_length=HOP_LENGTH)
+        rms       = librosa.feature.rms(y=y22, hop_length=HOP_LENGTH)[0]
+        onset_env = librosa.onset.onset_strength(y=y22, sr=SR_LIBROSA, hop_length=HOP_LENGTH)
+        raw_tempo = float(librosa.beat.tempo(onset_envelope=onset_env, sr=SR_LIBROSA, hop_length=HOP_LENGTH)[0])
 
-        scores, embeddings, spectrogram = yamnet_model(y)
-        embedding = np.mean(embeddings.numpy(), axis=0)  
-        X = embedding[np.newaxis, :]  
+        librosa_feats = np.concatenate([
+            np.mean(mfcc, axis=1), np.std(mfcc, axis=1),         # 40
+            np.mean(chroma, axis=1), np.std(chroma, axis=1),     # 24
+            np.mean(contrast, axis=1), np.std(contrast, axis=1), # 14
+            [np.mean(rms)], [np.std(rms)],                       #  2
+            [np.clip(raw_tempo / 240.0, 0.0, 1.0)],              #  1
+        ])  # 81 features
 
-        mood_preds = mood_model.predict(X)
-
-        # ── Two-stage genre prediction ──────────────────────────────────────
-        # Stage 1: broad category
-        cat_preds        = stage1_model.predict(X)
-        top2_cat         = np.argsort(cat_preds[0])[-2:][::-1]
-        predicted_cat    = str(stage1_encoder.inverse_transform([top2_cat[0]])[0])
-        runner_up_cat    = str(stage1_encoder.inverse_transform([top2_cat[1]])[0])
-        stage1_conf      = float(cat_preds[0][top2_cat[0]])
-
-        # Stage 2: specific genre within the predicted category
-        s2_model   = stage2_models.get(predicted_cat)
-        s2_encoder = stage2_encoders.get(predicted_cat)
-
-        if s2_model is not None and s2_encoder is not None:
-            s2_preds = s2_model.predict(X)
-            top2_gen = np.argsort(s2_preds[0])[-2:][::-1]
-            primary_genre        = str(s2_encoder.inverse_transform([top2_gen[0]])[0])
-            secondary_genre      = str(s2_encoder.inverse_transform([top2_gen[1]])[0])
-            primary_genre_conf   = float(s2_preds[0][top2_gen[0]]) * stage1_conf
-            secondary_genre_conf = float(s2_preds[0][top2_gen[1]]) * stage1_conf
-        elif s2_encoder is not None:
-            # Single-genre category: trivially correct, return the only genre
-            primary_genre        = str(s2_encoder.classes_[0])
-            secondary_genre      = primary_genre
-            primary_genre_conf   = stage1_conf
-            secondary_genre_conf = stage1_conf
+        # ── Resample to 16 kHz (shared for YAMNet mood + Discogs genre) ──────
+        y16 = librosa.resample(y22, orig_sr=SR_LIBROSA, target_sr=SR_DISCOGS)
+        target_16k = DURATION * SR_DISCOGS
+        if len(y16) < target_16k:
+            y16 = np.pad(y16, (0, target_16k - len(y16)))
         else:
-            # Fallback: use runner-up category's top genre if stage2 model unavailable
-            s2_fb_model   = stage2_models.get(runner_up_cat)
-            s2_fb_encoder = stage2_encoders.get(runner_up_cat)
-            if s2_fb_model is not None and s2_fb_encoder is not None:
-                s2_fb_preds  = s2_fb_model.predict(X)
-                fb_top_idx   = int(np.argmax(s2_fb_preds[0]))
-                primary_genre        = str(s2_fb_encoder.inverse_transform([fb_top_idx])[0])
-                secondary_genre      = primary_genre
-                primary_genre_conf   = float(cat_preds[0][top2_cat[1]])
-                secondary_genre_conf = primary_genre_conf
+            y16 = y16[:target_16k]
+        y16 = y16.astype(np.float32)
+        peak16 = np.abs(y16).max()
+        if peak16 > 0:
+            y16 = y16 / peak16
+
+        # ── YAMNet embeddings — used for mood prediction only (1024-dim mean) ─
+        _, embeddings, _ = yamnet_model(y16)
+        emb_np      = embeddings.numpy()
+        yamnet_mean = np.mean(emb_np, axis=0)   # (1024,)
+
+        # ── Discogs-EffNet embeddings — used for genre prediction (2560-dim) ──
+        patches = compute_mel_patches_discogs(y16)
+        if patches is None or len(patches) == 0:
+            raise ValueError("Audio too short to generate Discogs mel patches")
+        discogs_embs = run_discogs_inference(patches)         # (N_patches, 1280)
+        discogs_mean = np.mean(discogs_embs, axis=0)          # (1280,)
+        discogs_std  = np.std(discogs_embs, axis=0)           # (1280,)
+
+        # ── Combine → 2641-dim → scale ────────────────────────────────────────
+        raw_feat = np.concatenate([discogs_mean, discogs_std, librosa_feats])  # (2641,)
+        X_genre  = feature_scaler.transform(raw_feat[np.newaxis, :])           # (1, 2641)
+
+        # ── Mood uses 1024-dim YAMNet mean embedding ──────────────────────────
+        X_mood = yamnet_mean[np.newaxis, :]   # (1, 1024)
+        mood_preds = mood_model.predict(X_mood, verbose=0)
+
+        # ── Genre prediction: run ALL Stage 2 models, pick highest adjusted confidence
+        #
+        # Why not use Stage 1 to gate Stage 2?
+        # Stage 1 accuracy is ~48% — it bottlenecks the system (48% × 65% ≈ 31%).
+        # Instead we run all 10 Stage 2 models and pick the genre whose model is
+        # most "confident" relative to its class count (adjusted confidence).
+        # Each Stage 2 model outputs high softmax scores for its own genres and
+        # low/diffuse scores for out-of-distribution inputs, so the best-calibrated
+        # model naturally wins.
+        #
+        # Adjusted confidence = raw_softmax - (1 / num_classes_in_this_model)
+        # This subtracts the "random chance" baseline so models with different
+        # numbers of classes can be compared fairly (e.g., Theatrical has 2 classes
+        # vs Latin with 10 — raw softmax is not comparable between them).
+
+        all_candidates = []  # (adjusted_conf, raw_conf, genre_label)
+
+        for _cat in STAGE2_CATEGORIES:
+            _s2_model   = stage2_models.get(_cat)
+            _s2_encoder = stage2_encoders.get(_cat)
+            if _s2_encoder is None:
+                continue
+            n_cls = len(_s2_encoder.classes_)
+            if _s2_model is not None:
+                _preds = _s2_model.predict(X_genre, verbose=0)
+                for _i in range(n_cls):
+                    _genre    = str(_s2_encoder.inverse_transform([_i])[0])
+                    _raw      = float(_preds[0][_i])
+                    _adj      = _raw - (1.0 / n_cls)
+                    all_candidates.append((_adj, _raw, _genre))
             else:
-                primary_genre        = f"genre_{predicted_cat}"
-                secondary_genre      = primary_genre
-                primary_genre_conf   = stage1_conf
-                secondary_genre_conf = stage1_conf
+                # Single-genre category (trivially correct) — add with neutral score
+                _genre = str(_s2_encoder.classes_[0])
+                all_candidates.append((0.0, 1.0 / n_cls, _genre))
+
+        # Sort by adjusted confidence descending
+        all_candidates.sort(key=lambda x: x[0], reverse=True)
+
+        primary_genre        = all_candidates[0][2]
+        primary_genre_conf   = all_candidates[0][1]
+        secondary_genre      = all_candidates[1][2] if len(all_candidates) > 1 else primary_genre
+        secondary_genre_conf = all_candidates[1][1] if len(all_candidates) > 1 else primary_genre_conf
 
         best_mood_idx = np.argmax(mood_preds[0])
         mood_result = str(mood_encoder.inverse_transform([best_mood_idx])[0])
@@ -288,6 +420,8 @@ async def predict(request: Request, file: UploadFile = File(...)):
             "metal":             "Metal",
             # Phase 3 — Latin sub-genres
             "bachata":           "Bachata",
+            "bossa_nova":        "Bossa Nova",
+            "caribbean_dance":   "Bachata",   # Bachata+Merengue merge → show Bachata (more recognisable)
             "cumbia":            "Cumbia",
             "merengue":          "Merengue",
             "tango":             "Tango",
@@ -319,6 +453,12 @@ async def predict(request: Request, file: UploadFile = File(...)):
             # Phase 3 — Urban
             "hyperpop":          "HyperPop",
             "urbano":            "Urbano",
+            # Merged class labels from retrained Stage 2 models
+            "classical_baroque": "Classical",   # Classical + Baroque merged
+            "folk_country":      "Folk",        # Folk + Country merged
+            "pop_acoustic":      "Pop",         # Pop + Acoustic merged
+            "jazz_soul":         "Jazz",        # Jazz + Blues + Funk/Soul merged
+            "urban":             "Hip-Hop",     # Hip-Hop + Trap + R&B + Afrobeats merged
             # Legacy labels kept for backwards compatibility
             "orchestral":        "Classical",
             "alternative":       "Indie",
