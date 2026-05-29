@@ -329,22 +329,38 @@ async def predict(request: Request, file: UploadFile = File(...)):
         X_mood = yamnet_mean[np.newaxis, :]   # (1, 1024)
         mood_preds = mood_model.predict(X_mood, verbose=0)
 
-        # ── Genre prediction: run ALL Stage 2 models, pick highest adjusted confidence
+        # ── Genre prediction: Stage 1 as soft filter + Stage 2 for specific genre
         #
-        # Why not use Stage 1 to gate Stage 2?
-        # Stage 1 accuracy is ~48% — it bottlenecks the system (48% × 65% ≈ 31%).
-        # Instead we run all 10 Stage 2 models and pick the genre whose model is
-        # most "confident" relative to its class count (adjusted confidence).
-        # Each Stage 2 model outputs high softmax scores for its own genres and
-        # low/diffuse scores for out-of-distribution inputs, so the best-calibrated
-        # model naturally wins.
+        # Stage 1 predicts which broad category the track belongs to.
+        # Even at ~48% hard accuracy, its probability distribution is useful:
+        # a track that Stage 1 gives 5% Latin probability should not be classified
+        # as Bossa Nova just because Stage2_Latin is overconfident.
         #
-        # Adjusted confidence = raw_softmax - (1 / num_classes_in_this_model)
-        # This subtracts the "random chance" baseline so models with different
-        # numbers of classes can be compared fairly (e.g., Theatrical has 2 classes
-        # vs Latin with 10 — raw softmax is not comparable between them).
+        # Scoring formula:
+        #   stage1_weight  = Stage 1 softmax probability for this category
+        #   stage2_adj     = stage2_raw - (1 / n_classes)  [removes random-chance baseline]
+        #   final_score    = stage2_adj * (stage1_weight ^ STAGE1_INFLUENCE)
+        #
+        # STAGE1_INFLUENCE controls how hard Stage 1 filters Stage 2:
+        #   0.0 = ignore Stage 1 entirely (Stage 2 competes purely on its own)
+        #   0.2 = very light touch (Stage 1 only breaks near-ties)
+        #   0.5 = soft filter (Stage 1 nudges but doesn't dominate)
+        #   1.0 = full multiplication (Stage 1 probability directly scales Stage 2)
+        # Using 0.2: Stage 1 is only ~45% accurate so we let Stage 2 lead.
+        # The well-trained Stage 2 models (Ambient 69%, Folk 68%, Classical 67%)
+        # are far more reliable than Stage 1's category routing.
 
-        all_candidates = []  # (adjusted_conf, raw_conf, genre_label)
+        STAGE1_INFLUENCE = 0.2
+
+        # Run Stage 1 — get per-category probability distribution
+        stage1_preds = stage1_model.predict(X_genre, verbose=0)[0]  # shape: (n_categories,)
+        stage1_cat_probs = {
+            str(stage1_encoder.inverse_transform([i])[0]): float(stage1_preds[i])
+            for i in range(len(stage1_encoder.classes_))
+        }
+        print(f"Stage 1 category probs: { {k: round(v,3) for k,v in sorted(stage1_cat_probs.items(), key=lambda x: -x[1])} }")
+
+        all_candidates = []  # (final_score, raw_conf, genre_label)
 
         for _cat in STAGE2_CATEGORIES:
             _s2_model   = stage2_models.get(_cat)
@@ -352,20 +368,25 @@ async def predict(request: Request, file: UploadFile = File(...)):
             if _s2_encoder is None:
                 continue
             n_cls = len(_s2_encoder.classes_)
+            _s1_weight = stage1_cat_probs.get(_cat, 1.0 / len(STAGE2_CATEGORIES))
+
             if _s2_model is not None:
                 _preds = _s2_model.predict(X_genre, verbose=0)
                 for _i in range(n_cls):
-                    _genre    = str(_s2_encoder.inverse_transform([_i])[0])
-                    _raw      = float(_preds[0][_i])
-                    _adj      = _raw - (1.0 / n_cls)
-                    all_candidates.append((_adj, _raw, _genre))
+                    _genre  = str(_s2_encoder.inverse_transform([_i])[0])
+                    _raw    = float(_preds[0][_i])
+                    _adj    = _raw - (1.0 / n_cls)
+                    _final  = _adj * (_s1_weight ** STAGE1_INFLUENCE)
+                    all_candidates.append((_final, _raw, _genre))
             else:
-                # Single-genre category (trivially correct) — add with neutral score
-                _genre = str(_s2_encoder.classes_[0])
-                all_candidates.append((0.0, 1.0 / n_cls, _genre))
+                # Single-genre category — add with neutral score weighted by Stage 1
+                _genre  = str(_s2_encoder.classes_[0])
+                _final  = 0.0
+                all_candidates.append((_final, 1.0 / n_cls, _genre))
 
-        # Sort by adjusted confidence descending
+        # Sort by final score descending
         all_candidates.sort(key=lambda x: x[0], reverse=True)
+        print(f"Top 5 genre candidates: {[(g, round(s,4)) for s,_,g in all_candidates[:5]]}")
 
         primary_genre        = all_candidates[0][2]
         primary_genre_conf   = all_candidates[0][1]
@@ -594,4 +615,5 @@ async def generate_brief(request: Request, req: BriefRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
