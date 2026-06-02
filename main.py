@@ -97,6 +97,54 @@ PATCH_FRAMES = 128
 PATCH_HOP    = 64
 BATCH_SIZE_D = 64
 
+# ─── Musical key detection (Krumhansl-Schmuckler profiles) ───────────────────
+# These are the classic tonal hierarchy profiles from music cognition research.
+# Correlating the song's chromagram against these 24 templates (12 major + 12 minor)
+# gives ~80-85% key accuracy — comparable to Essentia's KeyExtractor.
+_KS_MAJOR = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09,
+                       2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+_KS_MINOR = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53,
+                       2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+_NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F',
+               'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+def detect_key(chroma: np.ndarray) -> tuple[str, float]:
+    """Return (key_string, confidence) using Krumhansl-Schmuckler correlation.
+
+    Args:
+        chroma: (12, T) chromagram from librosa.feature.chroma_stft
+
+    Returns:
+        key_string like 'C Major' or 'F# Minor'
+        confidence in [0, 1] — normalised correlation strength
+    """
+    chroma_mean = np.mean(chroma, axis=1)          # (12,) — average pitch class energy
+    chroma_mean = chroma_mean / (chroma_mean.sum() + 1e-8)  # normalise to sum = 1
+
+    best_corr  = -np.inf
+    best_key   = 'C Major'
+
+    for root in range(12):
+        # Rotate the profile so it starts on this root note
+        maj_profile = np.roll(_KS_MAJOR, root)
+        min_profile = np.roll(_KS_MINOR, root)
+
+        # Pearson correlation between chromagram and key profile
+        corr_maj = float(np.corrcoef(chroma_mean, maj_profile)[0, 1])
+        corr_min = float(np.corrcoef(chroma_mean, min_profile)[0, 1])
+
+        if corr_maj > best_corr:
+            best_corr = corr_maj
+            best_key  = f'{_NOTE_NAMES[root]} Major'
+        if corr_min > best_corr:
+            best_corr = corr_min
+            best_key  = f'{_NOTE_NAMES[root]} Minor'
+
+    # Normalise correlation [-1,1] → confidence [0,1]
+    confidence = float((best_corr + 1.0) / 2.0)
+    return best_key, confidence
+
+
 def focal_loss(gamma=2.0, alpha=0.25):
     def loss_fn(y_true, y_pred):
         y_pred = tf.clip_by_value(y_pred, 1e-7, 1 - 1e-7)
@@ -287,6 +335,9 @@ async def predict(request: Request, file: UploadFile = File(...)):
         rms       = librosa.feature.rms(y=y22, hop_length=HOP_LENGTH)[0]
         onset_env = librosa.onset.onset_strength(y=y22, sr=SR_LIBROSA, hop_length=HOP_LENGTH)
         raw_tempo = float(librosa.beat.tempo(onset_envelope=onset_env, sr=SR_LIBROSA, hop_length=HOP_LENGTH)[0])
+
+        # ── Musical key detection — uses chromagram already computed above ──────
+        detected_key, key_confidence = detect_key(chroma)
 
         librosa_feats = np.concatenate([
             np.mean(mfcc, axis=1), np.std(mfcc, axis=1),         # 40
@@ -535,6 +586,8 @@ async def predict(request: Request, file: UploadFile = File(...)):
             "secondary_genre_confidence": secondary_genre_conf,
             "mood": clean_mood,
             "mood_confidence": mood_conf,
+            "key": detected_key,                       # e.g. "C Major", "F# Minor"
+            "key_confidence": round(key_confidence, 3),
         }
 
     except Exception as e:
