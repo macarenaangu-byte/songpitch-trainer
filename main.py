@@ -338,8 +338,13 @@ async def predict(request: Request, file: UploadFile = File(...)):
         #
         # Scoring formula:
         #   stage1_weight  = Stage 1 softmax probability for this category
-        #   stage2_adj     = stage2_raw - (1 / n_classes)  [removes random-chance baseline]
+        #   stage2_adj     = (stage2_raw - 1/n) / (1 - 1/n)  [normalised: 0=random, 1=certain]
         #   final_score    = stage2_adj * (stage1_weight ^ STAGE1_INFLUENCE)
+        # The normalised formula is critical: models with more classes had a scoring
+        # advantage under the old "raw - 1/n" formula (e.g. Latin with 12 genres only
+        # deducted 0.083 vs Ambient with 4 genres deducting 0.25 — same raw softmax
+        # gave Latin a 2.8x scoring edge). Normalising puts all Stage 2 models on an
+        # equal footing regardless of how many sub-genres they contain.
         #
         # STAGE1_INFLUENCE controls how hard Stage 1 filters Stage 2:
         #   0.0 = ignore Stage 1 entirely (Stage 2 competes purely on its own)
@@ -375,7 +380,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
                 for _i in range(n_cls):
                     _genre  = str(_s2_encoder.inverse_transform([_i])[0])
                     _raw    = float(_preds[0][_i])
-                    _adj    = _raw - (1.0 / n_cls)
+                    _adj    = (_raw - (1.0 / n_cls)) / (1.0 - (1.0 / n_cls))
                     _final  = _adj * (_s1_weight ** STAGE1_INFLUENCE)
                     all_candidates.append((_final, _raw, _genre))
             else:
