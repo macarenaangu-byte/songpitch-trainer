@@ -223,6 +223,79 @@ def get_use_cases(genre: str, moods: list, energy: int, vocals: str) -> list[str
     return result
 
 
+# ─── LUFS loudness measurement (ITU-R BS.1770 via pyloudnorm) ────────────────
+import pyloudnorm as pyln
+
+def compute_lufs(y: np.ndarray, sr: int) -> tuple[float, str]:
+    """Return (integrated_lufs, note) for the audio signal.
+
+    Uses the ITU-R BS.1770-4 standard — same algorithm used by Spotify,
+    YouTube, Apple Music and broadcast regulators.
+    """
+    try:
+        meter = pyln.Meter(sr)                        # BS.1770 meter at audio SR
+        lufs  = float(meter.integrated_loudness(y))
+        lufs  = max(lufs, -70.0)                      # clamp silence floor
+
+        if lufs <= -23.0:
+            note = "Broadcast-safe (≤ -23 LUFS)"
+        elif lufs <= -16.0:
+            note = "Streaming-safe (Apple Music: -16 LUFS)"
+        elif lufs <= -14.0:
+            note = "Streaming-safe (Spotify/YouTube: -14 LUFS)"
+        elif lufs <= -9.0:
+            note = "Slightly loud — will be turned down on streaming platforms"
+        else:
+            note = "Very loud — will be significantly turned down on streaming platforms"
+
+        return round(lufs, 1), note
+    except Exception:
+        return -14.0, "Could not measure"
+
+
+# ─── Time signature detection ─────────────────────────────────────────────────
+def detect_time_signature(y: np.ndarray, sr: int, hop_length: int) -> str:
+    """Estimate time signature (4/4, 3/4, 6/8) from beat periodicity.
+
+    Uses the onset strength envelope autocorrelation at 3-beat vs 4-beat
+    lags to determine whether the dominant meter is triple or duple.
+    Returns '4/4', '3/4', or '6/8'.
+    """
+    try:
+        onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
+        # Autocorrelation of onset envelope reveals metric periodicity
+        ac = librosa.autocorrelate(onset_env, max_size=len(onset_env) // 2)
+        # Estimate beat period in frames
+        tempo, beats = librosa.beat.beat_track(
+            onset_envelope=onset_env, sr=sr, hop_length=hop_length
+        )
+        beat_frames = int(round(sr / (float(tempo) / 60.0) / hop_length))
+        if beat_frames < 1:
+            return "4/4"
+
+        # Compare autocorrelation energy at 3-beat vs 4-beat periods
+        lag3 = beat_frames * 3
+        lag4 = beat_frames * 4
+        lag6 = beat_frames * 6
+
+        def ac_energy(lag, width=3):
+            lo = max(0, lag - width)
+            hi = min(len(ac), lag + width + 1)
+            return float(np.mean(ac[lo:hi])) if hi > lo else 0.0
+
+        e3 = ac_energy(lag3)
+        e4 = ac_energy(lag4)
+        e6 = ac_energy(lag6)
+
+        if e3 > e4 * 1.15 and e6 > e4 * 0.9:
+            return "6/8"
+        if e3 > e4 * 1.1:
+            return "3/4"
+        return "4/4"
+    except Exception:
+        return "4/4"
+
+
 # ─── Musical key detection (Krumhansl-Schmuckler profiles) ───────────────────
 # These are the classic tonal hierarchy profiles from music cognition research.
 # Correlating the song's chromagram against these 24 templates (12 major + 12 minor)
@@ -464,6 +537,12 @@ async def predict(request: Request, file: UploadFile = File(...)):
 
         # ── Musical key detection — uses chromagram already computed above ──────
         detected_key, key_confidence = detect_key(chroma)
+
+        # ── LUFS loudness — ITU-R BS.1770 integrated loudness ────────────────
+        lufs, lufs_note = compute_lufs(y22, SR_LIBROSA)
+
+        # ── Time signature ────────────────────────────────────────────────────
+        time_signature = detect_time_signature(y22, SR_LIBROSA, HOP_LENGTH)
 
         librosa_feats = np.concatenate([
             np.mean(mfcc, axis=1), np.std(mfcc, axis=1),         # 40
@@ -760,10 +839,15 @@ async def predict(request: Request, file: UploadFile = File(...)):
             "tempo":                      tempo_descriptor,     # "Slow" / "Moderate" / "Upbeat" / "Fast"
             "energy":                     energy_level,         # 1 (calm) → 10 (intense)
             # ── Vocal detection ──
-            "vocals":                     vocals,               # "Instrumental" | "Vocals" | "Choir" | "Rap / Spoken Word"
+            "vocals":                     vocals,
             "vocals_confidence":          vocals_confidence,
+            # ── Loudness ──
+            "loudness_lufs":              lufs,
+            "loudness_note":              lufs_note,
+            # ── Time signature ──
+            "time_signature":             time_signature,
             # ── Use case / placement tags ──
-            "use_cases":                  use_cases,            # e.g. ["Film & TV", "Trailer / Epic"]
+            "use_cases":                  use_cases,
             # ── Legacy ──
             "predictions":                [clean_genre, clean_mood],
         }
