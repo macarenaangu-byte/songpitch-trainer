@@ -58,10 +58,12 @@ def validate_audio_upload(file: UploadFile):
 
 # 1. GLOBAL VARIABLES FOR AI MODELS
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-yamnet_model    = None
-mood_model      = None
-mood_encoder    = None
-feature_scaler  = None   # StandardScaler fitted on training set
+yamnet_model       = None
+mood_model         = None
+mood_encoder       = None
+instrument_model   = None
+instrument_encoder = None   # list of class names
+feature_scaler     = None   # StandardScaler fitted on training set
 
 # Hierarchical genre models
 stage1_model    = None   # broad category classifier (10 categories)
@@ -401,6 +403,7 @@ def run_discogs_inference(patches: np.ndarray) -> np.ndarray:
 @app.on_event("startup")
 async def load_all_models():
     global yamnet_model, mood_model, mood_encoder, feature_scaler
+    global instrument_model, instrument_encoder
     global stage1_model, stage1_encoder, stage2_models, stage2_encoders
     global discogs_session, discogs_input_tensor, discogs_embed_tensor
     print("🚪 Port is open! Now loading AI brains in the background...")
@@ -433,6 +436,18 @@ async def load_all_models():
     )
     with open(os.path.join(BASE_DIR, 'yamnet_mood_model_encoder.pkl'), 'rb') as f:
         mood_encoder = pickle.load(f)
+
+    # ── Instrument model (trained on 1024-dim YAMNet embeddings) ──
+    inst_model_path = os.path.join(BASE_DIR, 'instrument_model.h5')
+    if os.path.exists(inst_model_path):
+        instrument_model = tf.keras.models.load_model(
+            inst_model_path,
+            custom_objects={'loss_fn': focal_loss(gamma=2.0, alpha=0.25)},
+            compile=False,
+        )
+        with open(os.path.join(BASE_DIR, 'instrument_model_encoder.pkl'), 'rb') as f:
+            instrument_encoder = pickle.load(f)
+        print("✅ Instrument model loaded")
 
     # ── Hierarchical genre models (trained on 2641-dim Discogs features) ──
     stage1_model = tf.keras.models.load_model(
@@ -585,9 +600,23 @@ async def predict(request: Request, file: UploadFile = File(...)):
         raw_feat = np.concatenate([discogs_mean, discogs_std, librosa_feats])  # (2641,)
         X_genre  = feature_scaler.transform(raw_feat[np.newaxis, :])           # (1, 2641)
 
-        # ── Mood uses 1024-dim YAMNet mean embedding ──────────────────────────
+        # ── Mood + instrument both use 1024-dim YAMNet mean embedding ───────────
         X_mood = yamnet_mean[np.newaxis, :]   # (1, 1024)
         mood_preds = mood_model.predict(X_mood, verbose=0)
+
+        # ── Instrument prediction ─────────────────────────────────────────────
+        detected_instruments = []
+        if instrument_model is not None and instrument_encoder is not None:
+            inst_preds  = instrument_model.predict(X_mood, verbose=0)[0]
+            # Return top instruments above confidence threshold, max 3
+            INST_THRESHOLD = 0.35
+            top_inst_idx = np.argsort(inst_preds)[::-1]
+            for idx in top_inst_idx:
+                conf = float(inst_preds[idx])
+                if conf < INST_THRESHOLD or len(detected_instruments) >= 3:
+                    break
+                name = instrument_encoder.classes_[idx]
+                detected_instruments.append({"instrument": name, "confidence": round(conf, 3)})
 
         # ── Genre prediction: Stage 1 as soft filter + Stage 2 for specific genre
         #
@@ -838,6 +867,8 @@ async def predict(request: Request, file: UploadFile = File(...)):
             "bpm":                        bpm,
             "tempo":                      tempo_descriptor,     # "Slow" / "Moderate" / "Upbeat" / "Fast"
             "energy":                     energy_level,         # 1 (calm) → 10 (intense)
+            # ── Instrument detection ──
+            "instruments":                detected_instruments,  # e.g. [{"instrument":"Piano","confidence":0.72}]
             # ── Vocal detection ──
             "vocals":                     vocals,
             "vocals_confidence":          vocals_confidence,
