@@ -448,10 +448,34 @@ async def predict(request: Request, file: UploadFile = File(...)):
         primary_genre_conf   = all_candidates[0][1]
         secondary_genre      = all_candidates[1][2] if len(all_candidates) > 1 else primary_genre
         secondary_genre_conf = all_candidates[1][1] if len(all_candidates) > 1 else primary_genre_conf
+        tertiary_genre       = all_candidates[2][2] if len(all_candidates) > 2 else secondary_genre
+        tertiary_genre_conf  = all_candidates[2][1] if len(all_candidates) > 2 else secondary_genre_conf
 
-        best_mood_idx = np.argmax(mood_preds[0])
-        mood_result = str(mood_encoder.inverse_transform([best_mood_idx])[0])
-        mood_conf = float(mood_preds[0][best_mood_idx])
+        # ── Top 3 moods — model knows 14, return ranked top 3 ────────────────
+        mood_scores = mood_preds[0]
+        top_mood_indices = np.argsort(mood_scores)[::-1][:3]
+        top_moods = [
+            {
+                "mood":       str(mood_encoder.inverse_transform([i])[0]),
+                "confidence": float(mood_scores[i]),
+            }
+            for i in top_mood_indices
+        ]
+        mood_result = top_moods[0]["mood"]
+        mood_conf   = top_moods[0]["confidence"]
+
+        # ── BPM — round to nearest integer ───────────────────────────────────
+        bpm = int(round(raw_tempo))
+
+        # ── Energy level — derived from RMS, mapped to 1–10 scale ────────────
+        # RMS is the root-mean-square amplitude of the audio signal.
+        # Typical music RMS range: ~0.01 (very quiet/ambient) to ~0.25 (loud/energetic).
+        # We log-scale it into a 1–10 integer so it matches industry standard metadata.
+        rms_mean = float(np.mean(rms))
+        rms_clipped = float(np.clip(rms_mean, 0.005, 0.25))
+        import math
+        energy_raw = (math.log(rms_clipped) - math.log(0.005)) / (math.log(0.25) - math.log(0.005))
+        energy_level = int(round(1 + energy_raw * 9))   # 1 = very calm, 10 = very energetic
 
         # Map raw model labels → exact GENRE_OPTIONS / MOOD_OPTIONS display strings.
         # "Orchestral" maps to "Classical" — closest app genre to the training label.
@@ -570,24 +594,39 @@ async def predict(request: Request, file: UploadFile = File(...)):
             key = label.replace('mood_', '').lower()
             return MOOD_MAP.get(key) or label.replace('mood_', '').replace('_', ' ').title()
 
-        clean_genre = normalize_genre(primary_genre)
+        clean_genre     = normalize_genre(primary_genre)
         clean_secondary = normalize_genre(secondary_genre)
-        clean_mood = normalize_mood(mood_result)
+        clean_tertiary  = normalize_genre(tertiary_genre)
+        clean_mood      = normalize_mood(mood_result)
+        clean_moods     = [
+            {"mood": normalize_mood(m["mood"]), "confidence": round(m["confidence"], 3)}
+            for m in top_moods
+        ]
 
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
         return {
-            "predictions": [clean_genre, clean_mood],
-            "genre": clean_genre,
-            "genre_confidence": primary_genre_conf,
-            "secondary_genre": clean_secondary,        # snake_case (legacy)
-            "secondaryGenre": clean_secondary,         # camelCase (used by PortfolioPage bulk upload)
-            "secondary_genre_confidence": secondary_genre_conf,
-            "mood": clean_mood,
-            "mood_confidence": mood_conf,
-            "key": detected_key,                       # e.g. "C Major", "F# Minor"
-            "key_confidence": round(key_confidence, 3),
+            # ── Genre (primary + secondary + tertiary) ──
+            "genre":                      clean_genre,
+            "genre_confidence":           round(primary_genre_conf, 3),
+            "secondary_genre":            clean_secondary,
+            "secondaryGenre":             clean_secondary,      # camelCase legacy
+            "secondary_genre_confidence": round(secondary_genre_conf, 3),
+            "tertiary_genre":             clean_tertiary,
+            "tertiary_genre_confidence":  round(tertiary_genre_conf, 3),
+            # ── Mood (primary + top 3 ranked list) ──
+            "mood":                       clean_mood,
+            "mood_confidence":            round(mood_conf, 3),
+            "moods":                      clean_moods,          # ranked top 3
+            # ── Musical key ──
+            "key":                        detected_key,
+            "key_confidence":             round(key_confidence, 3),
+            # ── Tempo & energy ──
+            "bpm":                        bpm,
+            "energy":                     energy_level,         # 1 (calm) → 10 (intense)
+            # ── Legacy predictions array ──
+            "predictions":                [clean_genre, clean_mood],
         }
 
     except Exception as e:
