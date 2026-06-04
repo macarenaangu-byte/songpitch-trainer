@@ -97,6 +97,132 @@ PATCH_FRAMES = 128
 PATCH_HOP    = 64
 BATCH_SIZE_D = 64
 
+# ─── YAMNet vocal class indices (from AudioSet ontology) ─────────────────────
+_YAMNET_SINGING     = 24   # "Singing"
+_YAMNET_CHOIR       = 25   # "Choir"
+_YAMNET_RAPPING     = 31   # "Rapping"
+_YAMNET_VOCAL_MUSIC = 249  # "Vocal music"
+_YAMNET_SPEECH      = 0    # "Speech"
+
+def detect_vocals(yamnet_class_scores: np.ndarray) -> tuple[str, float]:
+    """Detect vocal presence from YAMNet class score matrix.
+
+    Args:
+        yamnet_class_scores: (N_frames, 521) raw YAMNet class scores per frame
+
+    Returns:
+        (vocal_type, confidence)
+        vocal_type: "Instrumental" | "Vocals" | "Choir" | "Rap / Spoken Word"
+    """
+    mean_scores = np.mean(yamnet_class_scores, axis=0)   # (521,)
+
+    singing_score = float(mean_scores[_YAMNET_SINGING])
+    choir_score   = float(mean_scores[_YAMNET_CHOIR])
+    rap_score     = float(mean_scores[_YAMNET_RAPPING])
+    vocal_score   = float(mean_scores[_YAMNET_VOCAL_MUSIC])
+    speech_score  = float(mean_scores[_YAMNET_SPEECH])
+
+    # Combined vocal presence: any singing / rap / spoken word signal
+    total_vocal = max(singing_score, vocal_score, choir_score * 0.8, rap_score * 0.8)
+
+    VOCAL_THRESHOLD = 0.08   # tuned empirically — below this → instrumental
+
+    if total_vocal < VOCAL_THRESHOLD:
+        return "Instrumental", round(1.0 - total_vocal, 3)
+    if choir_score > singing_score and choir_score > 0.05:
+        return "Choir", round(choir_score, 3)
+    if rap_score > singing_score and rap_score > 0.05:
+        return "Rap / Spoken Word", round(rap_score, 3)
+    return "Vocals", round(max(singing_score, vocal_score), 3)
+
+
+def get_tempo_descriptor(bpm: int) -> str:
+    """Map BPM to a human-readable tempo descriptor used by sync licensing platforms."""
+    if bpm < 60:   return "Very Slow"
+    if bpm < 80:   return "Slow"
+    if bpm < 100:  return "Moderate"
+    if bpm < 120:  return "Upbeat"
+    if bpm < 140:  return "Fast"
+    return "Very Fast"
+
+
+def get_use_cases(genre: str, moods: list, energy: int, vocals: str) -> list[str]:
+    """Derive sync licensing use case tags from genre + mood + energy + vocal type.
+
+    No model needed — pure rule-based mapping used by all major catalog platforms.
+    Returns up to 4 use case strings ordered by confidence.
+    """
+    g = genre.lower()
+    all_moods = {m["mood"].lower() for m in moods}
+    tags = []
+
+    # ── Film & TV ─────────────────────────────────────────────────────────────
+    film_genres = {'film score', 'cinematic', 'classical', 'baroque', 'opera', 'ambient'}
+    film_moods  = {'epic', 'mysterious', 'suspense', 'dark', 'triumphant', 'tense', 'atmospheric'}
+    if g in film_genres or len(all_moods & film_moods) >= 1:
+        tags.append('Film & TV')
+
+    # ── Trailer / Epic ────────────────────────────────────────────────────────
+    if ('epic' in all_moods or 'triumphant' in all_moods) and energy >= 6:
+        tags.append('Trailer / Epic')
+
+    # ── Advertising / Commercial ──────────────────────────────────────────────
+    ad_moods = {'uplifting', 'happy', 'energetic', 'inspiring', 'playful', 'triumphant'}
+    if len(all_moods & ad_moods) >= 1 and energy >= 4:
+        tags.append('Advertising')
+
+    # ── Corporate / Brand ─────────────────────────────────────────────────────
+    corp_genres = {'corporate', 'acoustic', 'pop', 'indie'}
+    corp_moods  = {'uplifting', 'happy', 'inspiring', 'calm', 'playful'}
+    if g in corp_genres or len(all_moods & corp_moods) >= 1:
+        tags.append('Corporate / Brand')
+
+    # ── Sports / Action ───────────────────────────────────────────────────────
+    if energy >= 8 or (energy >= 7 and len(all_moods & {'aggressive', 'energetic'}) >= 1):
+        tags.append('Sports / Action')
+
+    # ── Gaming ────────────────────────────────────────────────────────────────
+    game_genres = {'electronic', 'techno', 'dubstep', 'drum & bass', 'edm', 'trance',
+                   'house', 'metal', 'rock', 'synthwave'}
+    game_moods  = {'epic', 'aggressive', 'mysterious', 'dark', 'energetic'}
+    if (g in game_genres and energy >= 6) or len(all_moods & game_moods) >= 2:
+        tags.append('Gaming')
+
+    # ── Study / Focus / Background ────────────────────────────────────────────
+    chill_genres = {'lo-fi', 'ambient', 'new age', 'corporate', 'classical'}
+    if g in chill_genres or (energy <= 4 and vocals == 'Instrumental'):
+        tags.append('Study / Focus')
+
+    # ── Meditation / Wellness ─────────────────────────────────────────────────
+    if g in {'ambient', 'new age'} and energy <= 4:
+        tags.append('Meditation / Wellness')
+
+    # ── Romance / Wedding ─────────────────────────────────────────────────────
+    if len(all_moods & {'romantic', 'nostalgic', 'melancholic'}) >= 1 and energy <= 7:
+        tags.append('Romance / Wedding')
+
+    # ── Documentary / Nature ──────────────────────────────────────────────────
+    doc_genres = {'folk', 'world music', 'classical', 'ambient', 'acoustic', 'new age'}
+    if g in doc_genres or 'atmospheric' in all_moods:
+        tags.append('Documentary')
+
+    # ── Social Media / Content Creation ──────────────────────────────────────
+    social_genres = {'pop', 'indie', 'hip-hop', 'r&b', 'edm', 'trap', 'afrobeats', 'k-pop'}
+    if g in social_genres and energy >= 5:
+        tags.append('Social Media / Content')
+
+    # Deduplicate and cap at 4 most relevant
+    seen = set()
+    result = []
+    for t in tags:
+        if t not in seen:
+            seen.add(t)
+            result.append(t)
+        if len(result) == 4:
+            break
+    return result
+
+
 # ─── Musical key detection (Krumhansl-Schmuckler profiles) ───────────────────
 # These are the classic tonal hierarchy profiles from music cognition research.
 # Correlating the song's chromagram against these 24 templates (12 major + 12 minor)
@@ -359,10 +485,14 @@ async def predict(request: Request, file: UploadFile = File(...)):
         if peak16 > 0:
             y16 = y16 / peak16
 
-        # ── YAMNet embeddings — used for mood prediction only (1024-dim mean) ─
-        _, embeddings, _ = yamnet_model(y16)
-        emb_np      = embeddings.numpy()
-        yamnet_mean = np.mean(emb_np, axis=0)   # (1024,)
+        # ── YAMNet — class scores for vocal detection + embeddings for mood ──────
+        class_scores, embeddings, _ = yamnet_model(y16)
+        class_scores_np = class_scores.numpy()              # (N_frames, 521)
+        emb_np          = embeddings.numpy()
+        yamnet_mean     = np.mean(emb_np, axis=0)           # (1024,)
+
+        # Vocal detection uses raw class scores before any pooling
+        vocals, vocals_confidence = detect_vocals(class_scores_np)
 
         # ── Discogs-EffNet embeddings — used for genre prediction (2560-dim) ──
         patches = compute_mel_patches_discogs(y16)
@@ -603,6 +733,9 @@ async def predict(request: Request, file: UploadFile = File(...)):
             for m in top_moods
         ]
 
+        tempo_descriptor = get_tempo_descriptor(bpm)
+        use_cases        = get_use_cases(clean_genre, clean_moods, energy_level, vocals)
+
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
@@ -618,14 +751,20 @@ async def predict(request: Request, file: UploadFile = File(...)):
             # ── Mood (primary + top 3 ranked list) ──
             "mood":                       clean_mood,
             "mood_confidence":            round(mood_conf, 3),
-            "moods":                      clean_moods,          # ranked top 3
+            "moods":                      clean_moods,
             # ── Musical key ──
             "key":                        detected_key,
             "key_confidence":             round(key_confidence, 3),
             # ── Tempo & energy ──
             "bpm":                        bpm,
+            "tempo":                      tempo_descriptor,     # "Slow" / "Moderate" / "Upbeat" / "Fast"
             "energy":                     energy_level,         # 1 (calm) → 10 (intense)
-            # ── Legacy predictions array ──
+            # ── Vocal detection ──
+            "vocals":                     vocals,               # "Instrumental" | "Vocals" | "Choir" | "Rap / Spoken Word"
+            "vocals_confidence":          vocals_confidence,
+            # ── Use case / placement tags ──
+            "use_cases":                  use_cases,            # e.g. ["Film & TV", "Trailer / Epic"]
+            # ── Legacy ──
             "predictions":                [clean_genre, clean_mood],
         }
 
