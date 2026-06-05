@@ -148,15 +148,16 @@ def get_tempo_descriptor(bpm: int) -> str:
     return "Very Fast"
 
 
-def get_use_cases(genre: str, moods: list, energy: int, vocals: str) -> list[str]:
-    """Derive sync licensing use case tags from genre + mood + energy + vocal type.
+def get_use_cases(genre: str, moods: list, energy: int, vocals: str,
+                  bpm: int = 120, time_sig: str = '4/4') -> list[str]:
+    """Derive sync licensing use case tags from all available metadata.
 
-    No model needed — pure rule-based mapping used by all major catalog platforms.
-    Returns up to 4 use case strings ordered by confidence.
+    Uses genre, mood, energy, vocals, BPM and time signature for richer
+    placement suggestions. Returns up to 4 tags ordered by confidence.
     """
-    g = genre.lower()
+    g         = genre.lower()
     all_moods = {m["mood"].lower() for m in moods}
-    tags = []
+    tags      = []
 
     # ── Film & TV ─────────────────────────────────────────────────────────────
     film_genres = {'film score', 'cinematic', 'classical', 'baroque', 'opera', 'ambient'}
@@ -169,7 +170,7 @@ def get_use_cases(genre: str, moods: list, energy: int, vocals: str) -> list[str
         tags.append('Trailer / Epic')
 
     # ── Advertising / Commercial ──────────────────────────────────────────────
-    ad_moods = {'uplifting', 'happy', 'energetic', 'inspiring', 'playful', 'triumphant'}
+    ad_moods = {'uplifting', 'happy', 'energetic', 'inspiring', 'playful', 'triumphant', 'groovy'}
     if len(all_moods & ad_moods) >= 1 and energy >= 4:
         tags.append('Advertising')
 
@@ -180,13 +181,13 @@ def get_use_cases(genre: str, moods: list, energy: int, vocals: str) -> list[str
         tags.append('Corporate / Brand')
 
     # ── Sports / Action ───────────────────────────────────────────────────────
-    if energy >= 8 or (energy >= 7 and len(all_moods & {'aggressive', 'energetic'}) >= 1):
+    if energy >= 8 or (energy >= 7 and len(all_moods & {'aggressive', 'energetic', 'angry'}) >= 1):
         tags.append('Sports / Action')
 
     # ── Gaming ────────────────────────────────────────────────────────────────
     game_genres = {'electronic', 'techno', 'dubstep', 'drum & bass', 'edm', 'trance',
-                   'house', 'metal', 'rock', 'synthwave'}
-    game_moods  = {'epic', 'aggressive', 'mysterious', 'dark', 'energetic'}
+                   'house', 'metal', 'rock', 'synthwave', 'hip-hop', 'trap'}
+    game_moods  = {'epic', 'aggressive', 'mysterious', 'dark', 'energetic', 'tense'}
     if (g in game_genres and energy >= 6) or len(all_moods & game_moods) >= 2:
         tags.append('Gaming')
 
@@ -196,12 +197,18 @@ def get_use_cases(genre: str, moods: list, energy: int, vocals: str) -> list[str
         tags.append('Study / Focus')
 
     # ── Meditation / Wellness ─────────────────────────────────────────────────
-    if g in {'ambient', 'new age'} and energy <= 4:
+    if (g in {'ambient', 'new age'} and energy <= 4) or \
+       (energy <= 3 and vocals == 'Instrumental'):
         tags.append('Meditation / Wellness')
 
     # ── Romance / Wedding ─────────────────────────────────────────────────────
-    if len(all_moods & {'romantic', 'nostalgic', 'melancholic'}) >= 1 and energy <= 7:
+    rom_moods = {'romantic', 'nostalgic', 'melancholic', 'hopeful', 'dreamy'}
+    if len(all_moods & rom_moods) >= 1 and energy <= 7:
         tags.append('Romance / Wedding')
+
+    # ── Waltz / Ballroom ──────────────────────────────────────────────────────
+    if time_sig == '3/4' and energy <= 6:
+        tags.append('Waltz / Ballroom')
 
     # ── Documentary / Nature ──────────────────────────────────────────────────
     doc_genres = {'folk', 'world music', 'classical', 'ambient', 'acoustic', 'new age'}
@@ -209,13 +216,18 @@ def get_use_cases(genre: str, moods: list, energy: int, vocals: str) -> list[str
         tags.append('Documentary')
 
     # ── Social Media / Content Creation ──────────────────────────────────────
-    social_genres = {'pop', 'indie', 'hip-hop', 'r&b', 'edm', 'trap', 'afrobeats', 'k-pop'}
+    social_genres = {'pop', 'indie', 'hip-hop', 'r&b', 'edm', 'trap', 'afrobeats', 'k-pop',
+                     'reggaeton', 'dancehall', 'house'}
     if g in social_genres and energy >= 5:
         tags.append('Social Media / Content')
 
-    # Deduplicate and cap at 4 most relevant
-    seen = set()
-    result = []
+    # ── Dance / Club ─────────────────────────────────────────────────────────
+    dance_genres = {'house', 'techno', 'edm', 'trance', 'drum & bass', 'dubstep', 'reggaeton'}
+    if g in dance_genres and bpm >= 120:
+        tags.append('Dance / Club')
+
+    # Deduplicate, keep top 4
+    seen, result = set(), []
     for t in tags:
         if t not in seen:
             seen.add(t)
@@ -647,7 +659,10 @@ async def predict(request: Request, file: UploadFile = File(...)):
         STAGE1_INFLUENCE = 0.2
 
         # Run Stage 1 — get per-category probability distribution
-        stage1_preds = stage1_model.predict(X_genre, verbose=0)[0]  # shape: (n_categories,)
+        # Stage 1 now uses YAMNet features (1024-dim) — better for broad category routing
+        # Stage 2 still uses Discogs features (2641-dim) — better for fine-grained sub-genres
+        X_stage1     = yamnet_mean[np.newaxis, :]                   # (1, 1024)
+        stage1_preds = stage1_model.predict(X_stage1, verbose=0)[0] # shape: (n_categories,)
         stage1_cat_probs = {
             str(stage1_encoder.inverse_transform([i])[0]): float(stage1_preds[i])
             for i in range(len(stage1_encoder.classes_))
@@ -842,7 +857,8 @@ async def predict(request: Request, file: UploadFile = File(...)):
         ]
 
         tempo_descriptor = get_tempo_descriptor(bpm)
-        use_cases        = get_use_cases(clean_genre, clean_moods, energy_level, vocals)
+        use_cases        = get_use_cases(clean_genre, clean_moods, energy_level, vocals,
+                                          bpm=bpm, time_sig=time_signature)
 
         if os.path.exists(temp_path):
             os.remove(temp_path)
