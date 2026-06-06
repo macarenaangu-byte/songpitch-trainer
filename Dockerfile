@@ -37,7 +37,6 @@ COPY requirements.txt .
 
 # Discogs EfficientNet frozen graph
 COPY discogs-effnet-bs64-1.pb .
-COPY discogs-effnet-bs64-1.json .
 
 # Feature scalers
 COPY feature_scaler.pkl .
