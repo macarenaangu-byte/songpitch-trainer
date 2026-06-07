@@ -99,12 +99,51 @@ PATCH_FRAMES = 128
 PATCH_HOP    = 64
 BATCH_SIZE_D = 64
 
-# ─── YAMNet vocal class indices (from AudioSet ontology) ─────────────────────
+# ─── YAMNet class indices (from AudioSet ontology) ───────────────────────────
+# Vocals
 _YAMNET_SINGING     = 24   # "Singing"
 _YAMNET_CHOIR       = 25   # "Choir"
 _YAMNET_RAPPING     = 31   # "Rapping"
 _YAMNET_VOCAL_MUSIC = 249  # "Vocal music"
 _YAMNET_SPEECH      = 0    # "Speech"
+
+# Instruments — grouped by family, use max() across related classes
+_YAMNET_INSTRUMENTS = {
+    "Piano":           [148, 149],          # Piano, Electric piano
+    "Organ":           [150, 151, 152],     # Organ, Electronic organ, Hammond organ
+    "Synthesizer":     [153],               # Synthesizer
+    "Guitar":          [135, 138, 139],     # Guitar, Acoustic guitar, Slide guitar
+    "Electric Guitar": [136],              # Electric guitar
+    "Bass":            [137, 189],          # Bass guitar, Double bass
+    "Drums":           [157, 158, 159, 160, 163],  # Drum kit, machine, snare, bass drum
+    "Strings":         [184, 185, 186, 188], # Bowed string, String section, Violin, Cello
+    "Brass":           [182],              # Trumpet
+    "Flute":           [191],              # Flute
+    "Saxophone":       [192],              # Saxophone
+}
+_YAMNET_INST_THRESHOLD = 0.05  # 25x above random baseline (1/521 ≈ 0.002)
+
+
+def detect_instruments_yamnet(yamnet_class_scores: np.ndarray) -> list:
+    """Detect instruments directly from YAMNet AudioSet class scores.
+
+    Uses YAMNet's built-in instrument knowledge (trained on 2M+ AudioSet clips)
+    instead of our smaller trained classifier. Much more accurate.
+
+    Args:
+        yamnet_class_scores: (N_frames, 521) YAMNet class scores per frame
+
+    Returns:
+        List of {"instrument": name, "confidence": score} sorted by confidence
+    """
+    mean_scores = np.mean(yamnet_class_scores, axis=0)   # (521,)
+    results = []
+    for inst_name, indices in _YAMNET_INSTRUMENTS.items():
+        score = float(max(mean_scores[i] for i in indices))
+        if score >= _YAMNET_INST_THRESHOLD:
+            results.append({"instrument": inst_name, "confidence": round(score, 3)})
+    results.sort(key=lambda x: x["confidence"], reverse=True)
+    return results
 
 def detect_vocals(yamnet_class_scores: np.ndarray) -> tuple[str, float]:
     """Detect vocal presence from YAMNet class score matrix.
@@ -618,20 +657,10 @@ async def predict(request: Request, file: UploadFile = File(...)):
         X_mood = yamnet_mean[np.newaxis, :]   # (1, 1024)
         mood_preds = mood_model.predict(X_mood, verbose=0)
 
-        # ── Instrument prediction ─────────────────────────────────────────────
-        detected_instruments = []
-        if instrument_model is not None and instrument_encoder is not None:
-            inst_preds  = instrument_model.predict(X_mood, verbose=0)[0]
-            # Return top instruments above confidence threshold, max 3
-            # Show ALL instruments above 0.15 confidence (1.5x above random baseline of 0.10)
-            # No cap — if 5 instruments are detected, show all 5
-            top_inst_idx = np.argsort(inst_preds)[::-1]
-            for idx in top_inst_idx:
-                conf = float(inst_preds[idx])
-                if conf < 0.15:
-                    break
-                name = instrument_encoder.classes_[idx]
-                detected_instruments.append({"instrument": name, "confidence": round(conf, 3)})
+        # ── Instrument detection via YAMNet AudioSet classes (no trained model) ─
+        # YAMNet was trained on 2M+ AudioSet clips with built-in instrument classes.
+        # Far more accurate than our small custom classifier.
+        detected_instruments = detect_instruments_yamnet(class_scores_np)
 
         # ── Genre prediction: Stage 1 as soft filter + Stage 2 for specific genre
         #
