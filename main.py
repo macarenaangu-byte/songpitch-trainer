@@ -623,14 +623,12 @@ async def predict(request: Request, file: UploadFile = File(...)):
         if instrument_model is not None and instrument_encoder is not None:
             inst_preds  = instrument_model.predict(X_mood, verbose=0)[0]
             # Return top instruments above confidence threshold, max 3
-            # Always return top 2 instruments + any others above 0.18
-            # (10-class softmax: random baseline = 0.10, so 0.18 = 80% above chance)
+            # Show ALL instruments above 0.15 confidence (1.5x above random baseline of 0.10)
+            # No cap — if 5 instruments are detected, show all 5
             top_inst_idx = np.argsort(inst_preds)[::-1]
-            for rank, idx in enumerate(top_inst_idx):
+            for idx in top_inst_idx:
                 conf = float(inst_preds[idx])
-                if rank >= 2 and conf < 0.18:   # always show top 2, then threshold
-                    break
-                if len(detected_instruments) >= 3:
+                if conf < 0.15:
                     break
                 name = instrument_encoder.classes_[idx]
                 detected_instruments.append({"instrument": name, "confidence": round(conf, 3)})
