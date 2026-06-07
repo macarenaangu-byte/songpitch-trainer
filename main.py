@@ -127,8 +127,10 @@ def detect_vocals(yamnet_class_scores: np.ndarray) -> tuple[str, float]:
     # Combined vocal presence: any singing / rap / spoken word signal
     total_vocal = max(singing_score, vocal_score, choir_score * 0.8, rap_score * 0.8)
 
-    VOCAL_THRESHOLD = 0.08   # tuned empirically — below this → instrumental
+    VOCAL_THRESHOLD = 0.04   # lowered: mixed vocals in music score 0.04-0.07
 
+    print(f"Vocal scores — singing:{singing_score:.3f} vocal_music:{vocal_score:.3f} "
+          f"choir:{choir_score:.3f} rap:{rap_score:.3f} total:{total_vocal:.3f}")
     if total_vocal < VOCAL_THRESHOLD:
         return "Instrumental", round(1.0 - total_vocal, 3)
     if choir_score > singing_score and choir_score > 0.05:
@@ -621,11 +623,14 @@ async def predict(request: Request, file: UploadFile = File(...)):
         if instrument_model is not None and instrument_encoder is not None:
             inst_preds  = instrument_model.predict(X_mood, verbose=0)[0]
             # Return top instruments above confidence threshold, max 3
-            INST_THRESHOLD = 0.35
+            # Always return top 2 instruments + any others above 0.18
+            # (10-class softmax: random baseline = 0.10, so 0.18 = 80% above chance)
             top_inst_idx = np.argsort(inst_preds)[::-1]
-            for idx in top_inst_idx:
+            for rank, idx in enumerate(top_inst_idx):
                 conf = float(inst_preds[idx])
-                if conf < INST_THRESHOLD or len(detected_instruments) >= 3:
+                if rank >= 2 and conf < 0.18:   # always show top 2, then threshold
+                    break
+                if len(detected_instruments) >= 3:
                     break
                 name = instrument_encoder.classes_[idx]
                 detected_instruments.append({"instrument": name, "confidence": round(conf, 3)})
