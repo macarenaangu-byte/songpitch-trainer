@@ -688,7 +688,19 @@ async def predict(request: Request, file: UploadFile = File(...)):
         # The well-trained Stage 2 models (Ambient 69%, Folk 68%, Classical 67%)
         # are far more reliable than Stage 1's category routing.
 
-        STAGE1_INFLUENCE = 0.2
+        # STAGE1_INFLUENCE controls how hard Stage 1 gates Stage 2 results.
+        # At 0.2 (old): Stage 2's raw confidence almost always dominated, causing
+        # Rock_Metal to beat Pop_Indie even when Stage 1 correctly said Pop_Indie.
+        # At 0.5 (new): Stage 1 has meaningful weight — if Stage 1 gives Rock_Metal
+        # only 15%, it takes a 0.15^0.5 = 0.387 penalty, suppressing overconfident
+        # Stage 2 models that bleed into wrong categories.
+        STAGE1_INFLUENCE = 0.5
+
+        # STAGE1_MIN_GATE: hard exclude entire Stage 2 categories where Stage 1
+        # gives < 3% probability. This blocks Flamenco/Latin bleed when Stage 1
+        # is certain the song isn't Latin (giving it 1-2%), regardless of how
+        # overconfident Stage2_Latin is.
+        STAGE1_MIN_GATE = 0.03
 
         # Run Stage 1 — get per-category probability distribution
         # Stage 1 now uses YAMNet features (1024-dim) — better for broad category routing
@@ -710,6 +722,12 @@ async def predict(request: Request, file: UploadFile = File(...)):
                 continue
             n_cls = len(_s2_encoder.classes_)
             _s1_weight = stage1_cat_probs.get(_cat, 1.0 / len(STAGE2_CATEGORIES))
+
+            # Hard gate: skip entire category if Stage 1 strongly disagrees.
+            # Prevents overconfident Stage 2 models from bleeding across categories.
+            if _s1_weight < STAGE1_MIN_GATE:
+                print(f"  Skipping {_cat} (Stage1={_s1_weight:.3f} < gate {STAGE1_MIN_GATE})")
+                continue
 
             if _s2_model is not None:
                 _preds = _s2_model.predict(X_genre, verbose=0)
