@@ -457,13 +457,15 @@ def run_discogs_inference(patches: np.ndarray) -> np.ndarray:
 
 
 # 🔥 THIS IS THE FIX: Load models AFTER the server port opens
-@app.on_event("startup")
-async def load_all_models():
+def _load_models_sync():
+    """Load all models synchronously — runs in a thread pool so the event loop
+    (and therefore /health) stays responsive during the 60-90 second load."""
     global yamnet_model, mood_model, mood_encoder, feature_scaler
     global instrument_model, instrument_encoder
     global stage1_model, stage1_encoder, stage2_models, stage2_encoders
     global discogs_session, discogs_input_tensor, discogs_embed_tensor
-    print("🚪 Port is open! Now loading AI brains in the background...")
+    global _models_ready
+    print("🚪 Port is open! Now loading AI brains in a background thread...")
 
     # ── YAMNet (still used for mood prediction) ──
     yamnet_model = hub.load('https://tfhub.dev/google/yamnet/1')
@@ -532,8 +534,18 @@ async def load_all_models():
     print(f"✅ Genre models: Stage 1 + {loaded_s2}/{len(STAGE2_CATEGORIES)} Stage 2 models loaded")
     print("✅ All AI Brains successfully loaded and ready for traffic!")
 
-    global _models_ready
     _models_ready = True
+    print("✅ _models_ready = True — /health will now return 200")
+
+
+@app.on_event("startup")
+async def load_all_models():
+    """Kick off model loading in a thread so the HTTP server (and /health) stays
+    responsive immediately. Cloud Run startup probe can reach /health right away
+    and will keep getting 503 until models finish, then 200."""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _load_models_sync)
 
 
 @app.get("/health")
