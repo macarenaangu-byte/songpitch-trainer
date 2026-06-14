@@ -17,6 +17,10 @@ from typing import Optional
 
 load_dotenv()
 
+# Flag set to True only after all AI models finish loading.
+# Used by /health so Cloud Run startup probe knows when the instance is ready.
+_models_ready = False
+
 # Rate limiter — keyed by client IP
 limiter = Limiter(key_func=get_remote_address)
 
@@ -527,6 +531,22 @@ async def load_all_models():
     print(f"✅ Feature scaler loaded  (2641-dim normalisation)")
     print(f"✅ Genre models: Stage 1 + {loaded_s2}/{len(STAGE2_CATEGORIES)} Stage 2 models loaded")
     print("✅ All AI Brains successfully loaded and ready for traffic!")
+
+    global _models_ready
+    _models_ready = True
+
+
+@app.get("/health")
+async def health():
+    """Startup health probe for Cloud Run.
+
+    Returns 200 only after all AI models have finished loading.
+    Cloud Run startup probe uses this to avoid routing traffic to
+    a booting instance — eliminates 503s during restarts/deployments.
+    """
+    if not _models_ready:
+        raise HTTPException(status_code=503, detail="Models still loading")
+    return {"status": "ok"}
 
 # OpenAI client for AI Brief Writer
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
