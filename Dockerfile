@@ -9,6 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libgomp1 \
     build-essential \
+    libfftw3-dev \
+    libsamplerate0-dev \
+    libyaml-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python packages into a separate prefix so we can copy them cleanly
@@ -26,6 +29,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     ffmpeg \
     libgomp1 \
+    libfftw3-3 \
+    libsamplerate0 \
+    libyaml-0-2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy installed packages from builder
@@ -38,30 +44,7 @@ COPY requirements.txt .
 # Discogs EfficientNet frozen graph
 COPY discogs-effnet-bs64-1.pb .
 
-# Feature scaler + Stage 1 + Stage 2 genre models
-COPY feature_scaler.pkl .
-COPY stage1_model.h5 .
-COPY stage1_model_encoder.pkl .
-COPY stage2_Ambient_Chill_model.h5 .
-COPY stage2_Ambient_Chill_model_encoder.pkl .
-COPY stage2_Classical_Cinematic_model.h5 .
-COPY stage2_Classical_Cinematic_model_encoder.pkl .
-COPY stage2_Electronic_model.h5 .
-COPY stage2_Electronic_model_encoder.pkl .
-COPY stage2_Folk_Country_Roots_model.h5 .
-COPY stage2_Folk_Country_Roots_model_encoder.pkl .
-COPY stage2_HipHop_Urban_model.h5 .
-COPY stage2_HipHop_Urban_model_encoder.pkl .
-COPY stage2_Jazz_Blues_model.h5 .
-COPY stage2_Jazz_Blues_model_encoder.pkl .
-COPY stage2_Latin_model.h5 .
-COPY stage2_Latin_model_encoder.pkl .
-COPY stage2_Pop_Indie_model.h5 .
-COPY stage2_Pop_Indie_model_encoder.pkl .
-COPY stage2_Rock_Metal_model.h5 .
-COPY stage2_Rock_Metal_model_encoder.pkl .
-COPY stage2_Theatrical_model.h5 .
-COPY stage2_Theatrical_model_encoder.pkl .
+# Genre is now predicted directly by Essentia + discogs-effnet-bs64-1.pb (400 Discogs classes)
 
 # Mood model
 COPY yamnet_mood_model.h5 .
