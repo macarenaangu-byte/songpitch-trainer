@@ -1090,14 +1090,19 @@ async def predict(request: Request, file: UploadFile = File(...)):
         detected_instruments = detect_instruments_yamnet(class_scores_np)
 
         # ── Genre prediction — MTG genre_discogs400 (400 Discogs styles) ────────
-        # Feed the per-frame-averaged Discogs-EffNet embedding (1280-dim) through
-        # the MTG classification head. Outputs sigmoid probabilities for 400 genres.
-        # Trained on millions of Discogs tracks — far more reliable than our custom
-        # Stage 2 models for distinguishing Folk from Rock etc.
-        g400_probs = genre400_session.run(
+        # Pass all per-frame embeddings through the classification head, then
+        # average the per-frame predictions. This matches Essentia's
+        # TensorflowPredict2D behaviour — averaging inputs ≠ averaging outputs
+        # when the head has nonlinear layers.
+        g400_all   = genre400_session.run(
             genre400_output_tensor,
-            {genre400_input_tensor: discogs_mean[np.newaxis, :]}
-        )[0]  # (400,)
+            {genre400_input_tensor: discogs_embs}   # (N_patches, 1280)
+        )                                            # (N_patches, 400)
+        g400_probs = np.mean(g400_all, axis=0)       # (400,) average over frames
+
+        # Log the raw top-10 Discogs labels so we can inspect predictions
+        top10_raw = sorted(zip(g400_probs.tolist(), DISCOGS400_CLASSES), reverse=True)[:10]
+        print(f"Top 10 raw Discogs labels: {[(lbl, round(p,4)) for p,lbl in top10_raw]}")
 
         # Accumulate max sigmoid probability per clean genre name
         genre_scores: dict[str, float] = {}
