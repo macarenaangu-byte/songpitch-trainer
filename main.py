@@ -10,6 +10,7 @@ import numpy as np
 import pickle
 import os
 import json
+import concurrent.futures
 from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel
@@ -69,6 +70,7 @@ instrument_model   = None
 instrument_encoder = None   # list of class names
 feature_scaler     = None   # StandardScaler fitted on training set
 beatnet_estimator  = None   # BeatNet time signature detector (None = fallback to autocorrelation)
+_beatnet_pool      = None   # Dedicated thread pool for BeatNet (1 worker, 5s timeout per request)
 
 # Hierarchical genre models
 stage1_model    = None   # broad category classifier (10 categories)
@@ -541,11 +543,12 @@ def _load_models_sync():
     print("✅ All AI Brains successfully loaded and ready for traffic!")
 
     # ── BeatNet time signature estimator ──
-    global beatnet_estimator
+    global beatnet_estimator, _beatnet_pool
     try:
         from BeatNet.BeatNet import BeatNet
         beatnet_estimator = BeatNet(1, mode='offline', inference_model='DBN', plot=[], thread=False)
-        print("✅ BeatNet loaded — time signature detection active")
+        _beatnet_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        print("✅ BeatNet loaded — time signature detection active (5s timeout per request)")
     except Exception as e:
         print(f"⚠️  BeatNet unavailable ({e}) — falling back to autocorrelation")
 
@@ -656,21 +659,21 @@ async def predict(request: Request, file: UploadFile = File(...)):
         # ── LUFS loudness — ITU-R BS.1770 integrated loudness ────────────────
         lufs, lufs_note = compute_lufs(y22, SR_LIBROSA)
 
-        # ── Time signature — BeatNet (MIT) with autocorrelation fallback ────────
-        time_signature = '4/4'
-        if beatnet_estimator is not None:
+        # ── Time signature — BeatNet with 5s hard timeout, autocorrelation fallback
+        # BeatNet's DBN can hang on some audio files without a timeout.
+        # We run it in a dedicated thread pool and abort after 5 seconds.
+        if beatnet_estimator is not None and _beatnet_pool is not None:
             try:
-                beat_output = beatnet_estimator.process(temp_path)
+                future = _beatnet_pool.submit(beatnet_estimator.process, temp_path)
+                beat_output = future.result(timeout=5)
                 if beat_output is not None and len(beat_output) > 0:
                     max_beat = int(np.max(beat_output[:, 1]))
-                    if max_beat == 3:
-                        time_signature = '3/4'
-                    elif max_beat == 6:
-                        time_signature = '6/8'
-                    else:
-                        time_signature = '4/4'
+                    time_signature = '3/4' if max_beat == 3 else ('6/8' if max_beat == 6 else '4/4')
                 else:
                     time_signature = detect_time_signature(y22, SR_LIBROSA, HOP_LENGTH)
+            except concurrent.futures.TimeoutError:
+                print("⚠️  BeatNet timed out — using autocorrelation fallback")
+                time_signature = detect_time_signature(y22, SR_LIBROSA, HOP_LENGTH)
             except Exception:
                 time_signature = detect_time_signature(y22, SR_LIBROSA, HOP_LENGTH)
         else:
