@@ -449,23 +449,25 @@ mood_model         = None
 mood_encoder       = None
 instrument_model   = None
 instrument_encoder = None   # list of class names
-feature_scaler     = None   # kept for backward compat, no longer used for genre
+feature_scaler     = None   # StandardScaler fitted on training set
 beatnet_estimator  = None   # BeatNet time signature detector (None = fallback to autocorrelation)
 _beatnet_pool      = None   # Dedicated thread pool for BeatNet (1 worker, 5s timeout per request)
 
 # Hierarchical genre models
-stage1_model    = None   # broad category classifier (kept, unused for genre scoring)
+STAGE2_CATEGORIES = [
+    'Latin', 'Electronic', 'Rock_Metal', 'Classical_Cinematic',
+    'HipHop_Urban', 'Pop_Indie', 'Folk_Country_Roots', 'Jazz_Blues',
+    'Ambient_Chill', 'Theatrical',
+]
+stage1_model    = None   # broad category classifier (10 categories)
 stage1_encoder  = None
+stage2_models   = {}     # {category_name: Keras model}
+stage2_encoders = {}     # {category_name: LabelEncoder}
 
 # Discogs TF1 frozen graph (loaded at startup)
 discogs_session      = None
 discogs_input_tensor = None
 discogs_embed_tensor = None
-
-# MTG genre_discogs400 classification head
-genre400_session      = None
-genre400_input_tensor = None
-genre400_output_tensor = None
 
 # Librosa constants — must match extract_discogs_features.py exactly
 SR_LIBROSA  = 22050
@@ -846,11 +848,10 @@ def run_discogs_inference(patches: np.ndarray) -> np.ndarray:
 def _load_models_sync():
     """Load all models synchronously — runs in a thread pool so the event loop
     (and therefore /health) stays responsive during the 60-90 second load."""
-    global yamnet_model, mood_model, mood_encoder
+    global yamnet_model, mood_model, mood_encoder, feature_scaler
     global instrument_model, instrument_encoder
-    global stage1_model, stage1_encoder
+    global stage1_model, stage1_encoder, stage2_models, stage2_encoders
     global discogs_session, discogs_input_tensor, discogs_embed_tensor
-    global genre400_session, genre400_input_tensor, genre400_output_tensor
     global _models_ready
     print("🚪 Port is open! Now loading AI brains in a background thread...")
 
@@ -870,18 +871,34 @@ def _load_models_sync():
     discogs_embed_tensor = discogs_graph.get_tensor_by_name('PartitionedCall:1')
     print(f"✅ Discogs-EfficientNet loaded from {discogs_pb}")
 
-    # ── MTG genre_discogs400 classification head ──────────────────────────────
-    genre400_pb = os.path.join(BASE_DIR, 'genre_discogs400-discogs-effnet-1.pb')
-    genre400_graph = tf.Graph()
-    with genre400_graph.as_default():
-        gdef = tf.compat.v1.GraphDef()
-        with open(genre400_pb, 'rb') as fh:
-            gdef.ParseFromString(fh.read())
-        tf.import_graph_def(gdef, name='')
-    genre400_session      = tf.compat.v1.Session(graph=genre400_graph)
-    genre400_input_tensor  = genre400_graph.get_tensor_by_name('serving_default_model_Placeholder:0')
-    genre400_output_tensor = genre400_graph.get_tensor_by_name('PartitionedCall:0')
-    print("✅ MTG genre_discogs400 loaded (400 Discogs genres, 1280-dim input)")
+    # ── Feature scaler (required — normalises 2641-dim Discogs features) ──
+    with open(os.path.join(BASE_DIR, 'feature_scaler.pkl'), 'rb') as f:
+        feature_scaler = pickle.load(f)
+
+    # ── Hierarchical genre models (trained on 2641-dim Discogs features) ──
+    stage1_model = tf.keras.models.load_model(
+        os.path.join(BASE_DIR, 'stage1_model.h5'),
+        compile=False,
+    )
+    with open(os.path.join(BASE_DIR, 'stage1_model_encoder.pkl'), 'rb') as f:
+        stage1_encoder = pickle.load(f)
+
+    for cat in STAGE2_CATEGORIES:
+        model_path   = os.path.join(BASE_DIR, f'stage2_{cat}_model.h5')
+        encoder_path = os.path.join(BASE_DIR, f'stage2_{cat}_model_encoder.pkl')
+        if os.path.exists(model_path):
+            stage2_models[cat] = tf.keras.models.load_model(
+                model_path,
+                custom_objects={'loss_fn': focal_loss(gamma=2.0, alpha=0.25)},
+                compile=False,
+            )
+        if os.path.exists(encoder_path):
+            with open(encoder_path, 'rb') as f:
+                stage2_encoders[cat] = pickle.load(f)
+
+    loaded_s2 = sum(1 for cat in STAGE2_CATEGORIES if cat in stage2_models)
+    print(f"✅ Feature scaler loaded  (2641-dim normalisation)")
+    print(f"✅ Genre models: Stage 1 + {loaded_s2}/{len(STAGE2_CATEGORIES)} Stage 2 models loaded")
 
     # ── Mood model (trained on 1024-dim YAMNet mean embeddings) ──
     mood_model = tf.keras.models.load_model(
@@ -985,7 +1002,7 @@ class BriefRequest(BaseModel):
 # 🔥 THIS IS THE FIX: Disabled limiter to prevent Typing crash
 # @limiter.limit("10/minute")
 async def predict(request: Request, file: UploadFile = File(...)):
-    if yamnet_model is None or genre400_session is None or discogs_session is None:
+    if yamnet_model is None or stage1_model is None or discogs_session is None:
         raise HTTPException(status_code=503, detail="AI is still warming up. Try again in 30 seconds!")
         
     validate_audio_upload(file)
@@ -1089,40 +1106,59 @@ async def predict(request: Request, file: UploadFile = File(...)):
         # Far more accurate than our small custom classifier.
         detected_instruments = detect_instruments_yamnet(class_scores_np)
 
-        # ── Genre prediction — MTG genre_discogs400 (400 Discogs styles) ────────
-        # Pass all per-frame embeddings through the classification head, then
-        # average the per-frame predictions. This matches Essentia's
-        # TensorflowPredict2D behaviour — averaging inputs ≠ averaging outputs
-        # when the head has nonlinear layers.
-        g400_all   = genre400_session.run(
-            genre400_output_tensor,
-            {genre400_input_tensor: discogs_embs}   # (N_patches, 1280)
-        )                                            # (N_patches, 400)
-        g400_probs = np.mean(g400_all, axis=0)       # (400,) average over frames
+        # ── Feature vector for genre models (2641-dim) ──────────────────────────
+        raw_feat = np.concatenate([discogs_mean, discogs_std, librosa_feats])  # (2641,)
+        X_genre  = feature_scaler.transform(raw_feat[np.newaxis, :])           # (1, 2641)
 
-        # Log the raw top-10 Discogs labels so we can inspect predictions
-        top10_raw = sorted(zip(g400_probs.tolist(), DISCOGS400_CLASSES), reverse=True)[:10]
-        print(f"Top 10 raw Discogs labels: {[(lbl, round(p,4)) for p,lbl in top10_raw]}")
+        # ── Genre prediction: Stage 1 as soft filter + Stage 2 for specific genre
+        STAGE1_INFLUENCE = 0.5
+        # Raised from 0.03 → 0.10 to block Hard Rock bleed into Folk/Pop.
+        # Rock_Metal needs ≥10% Stage 1 confidence to appear in results at all.
+        STAGE1_MIN_GATE = 0.10
 
-        # Accumulate max sigmoid probability per clean genre name
-        genre_scores: dict[str, float] = {}
-        for _i, _prob in enumerate(g400_probs):
-            _label = DISCOGS400_CLASSES[_i]
-            _clean = DISCOGS400_TO_GENRE.get(_label)
-            if _clean is None:
+        X_stage1     = yamnet_mean[np.newaxis, :]
+        stage1_preds = stage1_model.predict(X_stage1, verbose=0)[0]
+        stage1_cat_probs = {
+            str(stage1_encoder.inverse_transform([i])[0]): float(stage1_preds[i])
+            for i in range(len(stage1_encoder.classes_))
+        }
+        print(f"Stage 1 category probs: { {k: round(v,3) for k,v in sorted(stage1_cat_probs.items(), key=lambda x: -x[1])} }")
+
+        all_candidates = []  # (final_score, raw_conf, genre_label)
+
+        for _cat in STAGE2_CATEGORIES:
+            _s2_model   = stage2_models.get(_cat)
+            _s2_encoder = stage2_encoders.get(_cat)
+            if _s2_encoder is None:
                 continue
-            if _clean not in genre_scores or _prob > genre_scores[_clean]:
-                genre_scores[_clean] = float(_prob)
+            n_cls = len(_s2_encoder.classes_)
+            _s1_weight = stage1_cat_probs.get(_cat, 1.0 / len(STAGE2_CATEGORIES))
 
-        ranked = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
-        print(f"Top 5 genre candidates: {[(g, round(s, 4)) for g, s in ranked[:5]]}")
+            if _s1_weight < STAGE1_MIN_GATE:
+                print(f"  Skipping {_cat} (Stage1={_s1_weight:.3f} < gate {STAGE1_MIN_GATE})")
+                continue
 
-        primary_genre        = ranked[0][0]
-        primary_genre_conf   = ranked[0][1]
-        secondary_genre      = ranked[1][0] if len(ranked) > 1 else primary_genre
-        secondary_genre_conf = ranked[1][1] if len(ranked) > 1 else primary_genre_conf
-        tertiary_genre       = ranked[2][0] if len(ranked) > 2 else secondary_genre
-        tertiary_genre_conf  = ranked[2][1] if len(ranked) > 2 else secondary_genre_conf
+            if _s2_model is not None:
+                _preds = _s2_model.predict(X_genre, verbose=0)
+                for _i in range(n_cls):
+                    _genre  = str(_s2_encoder.inverse_transform([_i])[0])
+                    _raw    = float(_preds[0][_i])
+                    _adj    = (_raw - (1.0 / n_cls)) / (1.0 - (1.0 / n_cls))
+                    _final  = _adj * (_s1_weight ** STAGE1_INFLUENCE)
+                    all_candidates.append((_final, _raw, _genre))
+            else:
+                _genre  = str(_s2_encoder.classes_[0])
+                all_candidates.append((0.0, 1.0 / n_cls, _genre))
+
+        all_candidates.sort(key=lambda x: x[0], reverse=True)
+        print(f"Top 5 genre candidates: {[(g, round(s,4)) for s,_,g in all_candidates[:5]]}")
+
+        primary_genre        = all_candidates[0][2]
+        primary_genre_conf   = all_candidates[0][1]
+        secondary_genre      = all_candidates[1][2] if len(all_candidates) > 1 else primary_genre
+        secondary_genre_conf = all_candidates[1][1] if len(all_candidates) > 1 else primary_genre_conf
+        tertiary_genre       = all_candidates[2][2] if len(all_candidates) > 2 else secondary_genre
+        tertiary_genre_conf  = all_candidates[2][1] if len(all_candidates) > 2 else secondary_genre_conf
 
         # ── Top 3 moods — model knows 14, return ranked top 3 ────────────────
         mood_scores = mood_preds[0]
