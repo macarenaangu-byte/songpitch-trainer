@@ -633,7 +633,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
         contrast  = librosa.feature.spectral_contrast(y=y22, sr=SR_LIBROSA, hop_length=HOP_LENGTH)
         rms       = librosa.feature.rms(y=y22, hop_length=HOP_LENGTH)[0]
         onset_env = librosa.onset.onset_strength(y=y22, sr=SR_LIBROSA, hop_length=HOP_LENGTH)
-        raw_tempo = float(librosa.feature.rhythm.tempo(onset_envelope=onset_env, sr=SR_LIBROSA, hop_length=HOP_LENGTH)[0])
+        raw_tempo = float(librosa.beat.tempo(onset_envelope=onset_env, sr=SR_LIBROSA, hop_length=HOP_LENGTH)[0])
 
         # ── Musical key detection — uses chromagram already computed above ──────
         detected_key, key_confidence = detect_key(chroma)
