@@ -68,6 +68,7 @@ mood_encoder       = None
 instrument_model   = None
 instrument_encoder = None   # list of class names
 feature_scaler     = None   # StandardScaler fitted on training set
+beatnet_estimator  = None   # BeatNet time signature detector (None = fallback to autocorrelation)
 
 # Hierarchical genre models
 stage1_model    = None   # broad category classifier (10 categories)
@@ -205,13 +206,17 @@ def get_use_cases(genre: str, moods: list, energy: int, vocals: str,
     tags      = []
 
     # ── Film & TV ─────────────────────────────────────────────────────────────
+    # Triumphant removed — it belongs in ads/sports, not film. Film needs
+    # genuinely cinematic moods: epic, mysterious, suspense, dark, tense.
     film_genres = {'film score', 'cinematic', 'classical', 'baroque', 'opera', 'ambient'}
-    film_moods  = {'epic', 'mysterious', 'suspense', 'dark', 'triumphant', 'tense', 'atmospheric'}
+    film_moods  = {'epic', 'mysterious', 'suspense', 'dark', 'tense', 'atmospheric'}
     if g in film_genres or len(all_moods & film_moods) >= 1:
         tags.append('Film & TV')
 
     # ── Trailer / Epic ────────────────────────────────────────────────────────
-    if ('epic' in all_moods or 'triumphant' in all_moods) and energy >= 6:
+    # Requires 'epic' specifically (not triumphant) and very high energy (8+).
+    # Prevents pop/folk songs with triumphant mood from getting this tag.
+    if 'epic' in all_moods and energy >= 8:
         tags.append('Trailer / Epic')
 
     # ── Advertising / Commercial ──────────────────────────────────────────────
@@ -226,7 +231,8 @@ def get_use_cases(genre: str, moods: list, energy: int, vocals: str,
         tags.append('Corporate / Brand')
 
     # ── Sports / Action ───────────────────────────────────────────────────────
-    if energy >= 8 or (energy >= 7 and len(all_moods & {'aggressive', 'energetic', 'angry'}) >= 1):
+    # Triumphant added here — it fits sports highlights and action content.
+    if energy >= 8 or (energy >= 7 and len(all_moods & {'aggressive', 'energetic', 'angry', 'triumphant'}) >= 1):
         tags.append('Sports / Action')
 
     # ── Gaming ────────────────────────────────────────────────────────────────
@@ -534,6 +540,15 @@ def _load_models_sync():
     print(f"✅ Genre models: Stage 1 + {loaded_s2}/{len(STAGE2_CATEGORIES)} Stage 2 models loaded")
     print("✅ All AI Brains successfully loaded and ready for traffic!")
 
+    # ── BeatNet time signature estimator ──
+    global beatnet_estimator
+    try:
+        from BeatNet.BeatNet import BeatNet
+        beatnet_estimator = BeatNet(1, mode='offline', inference_model='DBN', plot=[], thread=False)
+        print("✅ BeatNet loaded — time signature detection active")
+    except Exception as e:
+        print(f"⚠️  BeatNet unavailable ({e}) — falling back to autocorrelation")
+
     _models_ready = True
     print("✅ _models_ready = True — /health will now return 200")
 
@@ -641,8 +656,25 @@ async def predict(request: Request, file: UploadFile = File(...)):
         # ── LUFS loudness — ITU-R BS.1770 integrated loudness ────────────────
         lufs, lufs_note = compute_lufs(y22, SR_LIBROSA)
 
-        # ── Time signature ────────────────────────────────────────────────────
-        time_signature = detect_time_signature(y22, SR_LIBROSA, HOP_LENGTH)
+        # ── Time signature — BeatNet (MIT) with autocorrelation fallback ────────
+        time_signature = '4/4'
+        if beatnet_estimator is not None:
+            try:
+                beat_output = beatnet_estimator.process(temp_path)
+                if beat_output is not None and len(beat_output) > 0:
+                    max_beat = int(np.max(beat_output[:, 1]))
+                    if max_beat == 3:
+                        time_signature = '3/4'
+                    elif max_beat == 6:
+                        time_signature = '6/8'
+                    else:
+                        time_signature = '4/4'
+                else:
+                    time_signature = detect_time_signature(y22, SR_LIBROSA, HOP_LENGTH)
+            except Exception:
+                time_signature = detect_time_signature(y22, SR_LIBROSA, HOP_LENGTH)
+        else:
+            time_signature = detect_time_signature(y22, SR_LIBROSA, HOP_LENGTH)
 
         librosa_feats = np.concatenate([
             np.mean(mfcc, axis=1), np.std(mfcc, axis=1),         # 40
