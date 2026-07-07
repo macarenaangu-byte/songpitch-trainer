@@ -9,11 +9,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libgomp1 \
     build-essential \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python packages into a separate prefix so we can copy them cleanly
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# Download YAMNet frozen graph for essentia (replaces tensorflow-hub at runtime)
+RUN curl -fsSL -o /app/yamnet.pb \
+    https://essentia.upf.edu/models/feature-extractors/yamnet/yamnet-audioset-yamnet-1.pb
 
 
 # ─── Stage 2: Runtime image ───────────────────────────────────────────────────
@@ -35,8 +40,9 @@ COPY --from=builder /install /usr/local
 COPY main.py .
 COPY requirements.txt .
 
-# Discogs EfficientNet frozen graph
+# Essentia frozen graphs
 COPY discogs-effnet-bs64-1.pb .
+COPY --from=builder /app/yamnet.pb .
 
 # Genre is now predicted directly by Essentia + discogs-effnet-bs64-1.pb (400 Discogs classes)
 

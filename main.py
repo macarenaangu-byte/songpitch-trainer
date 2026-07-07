@@ -4,7 +4,6 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import tensorflow as tf
-import tensorflow_hub as hub
 import librosa
 import numpy as np
 import pickle
@@ -444,17 +443,16 @@ DISCOGS400_TO_GENRE = {
 
 # 1. GLOBAL VARIABLES FOR AI MODELS
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-yamnet_model       = None
-mood_model         = None
-mood_encoder       = None
-instrument_model   = None
-instrument_encoder = None
-beatnet_estimator  = None   # BeatNet time signature detector (None = fallback to autocorrelation)
-_beatnet_pool      = None   # Dedicated thread pool for BeatNet (1 worker, 5s timeout per request)
-
-# Essentia genre predictor — TensorflowPredictEffnetDiscogs wraps the discogs-effnet frozen graph
-# and handles mel preprocessing internally, matching the model's training pipeline exactly.
-effnet_predictor = None
+# YAMNet loaded via Essentia (avoids tensorflow-hub TF runtime conflict)
+yamnet_embed_predictor = None   # es.TensorflowPredictYAMNet → (N_frames, 1024) embeddings
+yamnet_class_predictor = None   # es.TensorflowPredictYAMNet → (N_frames, 521) AudioSet scores
+mood_model             = None
+mood_encoder           = None
+instrument_model       = None
+instrument_encoder     = None
+beatnet_estimator      = None
+_beatnet_pool          = None
+effnet_predictor       = None   # es.TensorflowPredictEffnetDiscogs → 400 Discogs genre classes
 
 # Librosa constants — must match extract_discogs_features.py exactly
 SR_LIBROSA  = 22050
@@ -793,29 +791,33 @@ def focal_loss(gamma=2.0, alpha=0.25):
 def _load_models_sync():
     """Load all models synchronously — runs in a thread pool so the event loop
     (and therefore /health) stays responsive during the 60-90 second load."""
-    global yamnet_model, mood_model, mood_encoder
+    global yamnet_embed_predictor, yamnet_class_predictor
+    global mood_model, mood_encoder
     global instrument_model, instrument_encoder
     global effnet_predictor
     global _models_ready
     print("🚪 Port is open! Now loading AI brains in a background thread...")
 
-    # ── YAMNet (used for mood + vocal detection) ──
-    yamnet_model = hub.load('https://tfhub.dev/google/yamnet/1')
+    # ── All Essentia models first (single TF context — no hub.load conflict) ──
+    import essentia.standard as es
 
-    # ── Essentia Discogs-EfficientNet genre predictor ──────────────────────────
-    # Essentia handles mel preprocessing internally (unit-sum filter weights,
-    # log compression, 96-mel 16kHz) — this matches the model's training pipeline.
-    try:
-        import essentia.standard as es
-        discogs_pb = os.path.join(BASE_DIR, 'discogs-effnet-bs64-1.pb')
-        effnet_predictor = es.TensorflowPredictEffnetDiscogs(
-            graphFilename=discogs_pb,
-            output="PartitionedCall:0"   # 400-class sigmoid predictions per patch
-        )
-        print(f"✅ Essentia Discogs-EfficientNet loaded — 400 Discogs genre classes")
-    except Exception as e:
-        print(f"❌ Essentia failed to load: {type(e).__name__}: {e}")
-        print("⚠️  Genre prediction will be unavailable this session")
+    yamnet_pb = os.path.join(BASE_DIR, 'yamnet.pb')
+    yamnet_embed_predictor = es.TensorflowPredictYAMNet(
+        graphFilename=yamnet_pb,
+        output='model/waveform_to_embeddings/Identity'
+    )
+    yamnet_class_predictor = es.TensorflowPredictYAMNet(
+        graphFilename=yamnet_pb,
+        output='model/predictions/Softmax'
+    )
+    print("✅ Essentia YAMNet loaded — embeddings + 521 AudioSet class scores")
+
+    discogs_pb = os.path.join(BASE_DIR, 'discogs-effnet-bs64-1.pb')
+    effnet_predictor = es.TensorflowPredictEffnetDiscogs(
+        graphFilename=discogs_pb,
+        output="PartitionedCall:0"
+    )
+    print("✅ Essentia Discogs-EfficientNet loaded — 400 Discogs genre classes")
 
     # ── Mood model (trained on 1024-dim YAMNet mean embeddings) ──
     mood_model = tf.keras.models.load_model(
@@ -919,7 +921,7 @@ class BriefRequest(BaseModel):
 # 🔥 THIS IS THE FIX: Disabled limiter to prevent Typing crash
 # @limiter.limit("10/minute")
 async def predict(request: Request, file: UploadFile = File(...)):
-    if yamnet_model is None:
+    if yamnet_embed_predictor is None:
         raise HTTPException(status_code=503, detail="AI is still warming up. Try again in 30 seconds!")
         
     validate_audio_upload(file)
@@ -977,23 +979,14 @@ async def predict(request: Request, file: UploadFile = File(...)):
         else:
             time_signature = detect_time_signature(y22, SR_LIBROSA, HOP_LENGTH)
 
-        # ── Resample to 16 kHz for YAMNet ────────────────────────────────────
-        y16 = librosa.resample(y22, orig_sr=SR_LIBROSA, target_sr=SR_DISCOGS)
-        target_16k = DURATION * SR_DISCOGS
-        if len(y16) < target_16k:
-            y16 = np.pad(y16, (0, target_16k - len(y16)))
-        else:
-            y16 = y16[:target_16k]
-        y16 = y16.astype(np.float32)
-        peak16 = np.abs(y16).max()
-        if peak16 > 0:
-            y16 = y16 / peak16
+        # ── Load 16 kHz audio via Essentia (for YAMNet + Discogs-EfficientNet) ──
+        import essentia.standard as es
+        audio_es = es.MonoLoader(filename=temp_path, sampleRate=16000)()
 
-        # ── YAMNet — class scores for vocal detection + embeddings for mood ──────
-        class_scores, embeddings, _ = yamnet_model(y16)
-        class_scores_np = class_scores.numpy()              # (N_frames, 521)
-        emb_np          = embeddings.numpy()
-        yamnet_mean     = np.mean(emb_np, axis=0)           # (1024,)
+        # ── YAMNet via Essentia — same model/weights as hub.load, no TF conflict
+        embeddings_np   = yamnet_embed_predictor(audio_es)   # (N_frames, 1024)
+        class_scores_np = yamnet_class_predictor(audio_es)   # (N_frames, 521)
+        yamnet_mean     = np.mean(embeddings_np, axis=0)     # (1024,)
 
         # Vocal detection uses raw class scores before any pooling
         vocals, vocals_confidence = detect_vocals(class_scores_np)
@@ -1007,8 +1000,6 @@ async def predict(request: Request, file: UploadFile = File(...)):
 
         # ── Genre prediction via Essentia Discogs-EfficientNet (400 classes) ───
         if effnet_predictor is not None:
-            import essentia.standard as es
-            audio_es = es.MonoLoader(filename=temp_path, sampleRate=16000)()
             genre_patch_preds = effnet_predictor(audio_es)   # (N_patches, 400) sigmoid per patch
             genre_probs = np.mean(genre_patch_preds, axis=0) # (400,) averaged over patches
 
