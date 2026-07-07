@@ -16,9 +16,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# Download YAMNet frozen graph for essentia (replaces tensorflow-hub at runtime)
-RUN curl -fsSL -o /app/yamnet.pb \
-    https://essentia.upf.edu/models/feature-extractors/yamnet/yamnet-audioset-yamnet-1.pb
+# Pre-download YAMNet SavedModel from Google's TF Hub GCS bucket
+# Avoids hub.load() at runtime which causes TF op registration conflicts
+RUN mkdir -p /app/yamnet_model && \
+    curl -fsSL "https://storage.googleapis.com/tfhub-modules/google/yamnet/1.tar.gz" | \
+    tar xz -C /app/yamnet_model
 
 
 # ─── Stage 2: Runtime image ───────────────────────────────────────────────────
@@ -40,9 +42,10 @@ COPY --from=builder /install /usr/local
 COPY main.py .
 COPY requirements.txt .
 
-# Essentia frozen graphs
+# Essentia Discogs-EfficientNet frozen graph
 COPY discogs-effnet-bs64-1.pb .
-COPY --from=builder /app/yamnet.pb .
+# YAMNet SavedModel pre-downloaded from GCS
+COPY --from=builder /app/yamnet_model ./yamnet_model
 
 # Genre is now predicted directly by Essentia + discogs-effnet-bs64-1.pb (400 Discogs classes)
 
