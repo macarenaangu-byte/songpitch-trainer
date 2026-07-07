@@ -9,9 +9,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libgomp1 \
     build-essential \
-    libfftw3-dev \
-    libsamplerate0-dev \
-    libyaml-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python packages into a separate prefix so we can copy them cleanly
@@ -29,9 +26,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     ffmpeg \
     libgomp1 \
-    libfftw3-3 \
-    libsamplerate0 \
-    libyaml-0-2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy installed packages from builder
