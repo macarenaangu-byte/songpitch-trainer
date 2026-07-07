@@ -61,6 +61,387 @@ def validate_audio_upload(file: UploadFile):
             detail=f"Invalid content type '{file.content_type}'. Upload an audio file."
         )
 
+# ── MTG genre_discogs400 — 400 Discogs genre labels in model output order ─────
+DISCOGS400_CLASSES = [
+    "Blues---Boogie Woogie","Blues---Chicago Blues","Blues---Country Blues",
+    "Blues---Delta Blues","Blues---Electric Blues","Blues---Harmonica Blues",
+    "Blues---Jump Blues","Blues---Louisiana Blues","Blues---Modern Electric Blues",
+    "Blues---Piano Blues","Blues---Rhythm & Blues","Blues---Texas Blues",
+    "Brass & Military---Brass Band","Brass & Military---Marches","Brass & Military---Military",
+    "Children's---Educational","Children's---Nursery Rhymes","Children's---Story",
+    "Classical---Baroque","Classical---Choral","Classical---Classical",
+    "Classical---Contemporary","Classical---Impressionist","Classical---Medieval",
+    "Classical---Modern","Classical---Neo-Classical","Classical---Neo-Romantic",
+    "Classical---Opera","Classical---Post-Modern","Classical---Renaissance",
+    "Classical---Romantic","Electronic---Abstract","Electronic---Acid",
+    "Electronic---Acid House","Electronic---Acid Jazz","Electronic---Ambient",
+    "Electronic---Bassline","Electronic---Beatdown","Electronic---Berlin-School",
+    "Electronic---Big Beat","Electronic---Bleep","Electronic---Breakbeat",
+    "Electronic---Breakcore","Electronic---Breaks","Electronic---Broken Beat",
+    "Electronic---Chillwave","Electronic---Chiptune","Electronic---Dance-pop",
+    "Electronic---Dark Ambient","Electronic---Darkwave","Electronic---Deep House",
+    "Electronic---Deep Techno","Electronic---Disco","Electronic---Disco Polo",
+    "Electronic---Donk","Electronic---Downtempo","Electronic---Drone",
+    "Electronic---Drum n Bass","Electronic---Dub","Electronic---Dub Techno",
+    "Electronic---Dubstep","Electronic---Dungeon Synth","Electronic---EBM",
+    "Electronic---Electro","Electronic---Electro House","Electronic---Electroclash",
+    "Electronic---Euro House","Electronic---Euro-Disco","Electronic---Eurobeat",
+    "Electronic---Eurodance","Electronic---Experimental","Electronic---Freestyle",
+    "Electronic---Future Jazz","Electronic---Gabber","Electronic---Garage House",
+    "Electronic---Ghetto","Electronic---Ghetto House","Electronic---Glitch",
+    "Electronic---Goa Trance","Electronic---Grime","Electronic---Halftime",
+    "Electronic---Hands Up","Electronic---Happy Hardcore","Electronic---Hard House",
+    "Electronic---Hard Techno","Electronic---Hard Trance","Electronic---Hardcore",
+    "Electronic---Hardstyle","Electronic---Hi NRG","Electronic---Hip Hop",
+    "Electronic---Hip-House","Electronic---House","Electronic---IDM",
+    "Electronic---Illbient","Electronic---Industrial","Electronic---Italo House",
+    "Electronic---Italo-Disco","Electronic---Italodance","Electronic---Jazzdance",
+    "Electronic---Juke","Electronic---Jumpstyle","Electronic---Jungle",
+    "Electronic---Latin","Electronic---Leftfield","Electronic---Makina",
+    "Electronic---Minimal","Electronic---Minimal Techno","Electronic---Modern Classical",
+    "Electronic---Musique Concrète","Electronic---Neofolk","Electronic---New Age",
+    "Electronic---New Beat","Electronic---New Wave","Electronic---Noise",
+    "Electronic---Nu-Disco","Electronic---Power Electronics","Electronic---Progressive Breaks",
+    "Electronic---Progressive House","Electronic---Progressive Trance","Electronic---Psy-Trance",
+    "Electronic---Rhythmic Noise","Electronic---Schranz","Electronic---Sound Collage",
+    "Electronic---Speed Garage","Electronic---Speedcore","Electronic---Synth-pop",
+    "Electronic---Synthwave","Electronic---Tech House","Electronic---Tech Trance",
+    "Electronic---Techno","Electronic---Trance","Electronic---Tribal",
+    "Electronic---Tribal House","Electronic---Trip Hop","Electronic---Tropical House",
+    "Electronic---UK Garage","Electronic---Vaporwave",
+    "Folk, World, & Country---African","Folk, World, & Country---Bluegrass",
+    "Folk, World, & Country---Cajun","Folk, World, & Country---Canzone Napoletana",
+    "Folk, World, & Country---Catalan Music","Folk, World, & Country---Celtic",
+    "Folk, World, & Country---Country","Folk, World, & Country---Fado",
+    "Folk, World, & Country---Flamenco","Folk, World, & Country---Folk",
+    "Folk, World, & Country---Gospel","Folk, World, & Country---Highlife",
+    "Folk, World, & Country---Hillbilly","Folk, World, & Country---Hindustani",
+    "Folk, World, & Country---Honky Tonk","Folk, World, & Country---Indian Classical",
+    "Folk, World, & Country---Laïkó","Folk, World, & Country---Nordic",
+    "Folk, World, & Country---Pacific","Folk, World, & Country---Polka",
+    "Folk, World, & Country---Raï","Folk, World, & Country---Romani",
+    "Folk, World, & Country---Soukous","Folk, World, & Country---Séga",
+    "Folk, World, & Country---Volksmusik","Folk, World, & Country---Zouk",
+    "Folk, World, & Country---Éntekhno",
+    "Funk / Soul---Afrobeat","Funk / Soul---Boogie","Funk / Soul---Contemporary R&B",
+    "Funk / Soul---Disco","Funk / Soul---Free Funk","Funk / Soul---Funk",
+    "Funk / Soul---Gospel","Funk / Soul---Neo Soul","Funk / Soul---New Jack Swing",
+    "Funk / Soul---P.Funk","Funk / Soul---Psychedelic","Funk / Soul---Rhythm & Blues",
+    "Funk / Soul---Soul","Funk / Soul---Swingbeat","Funk / Soul---UK Street Soul",
+    "Hip Hop---Bass Music","Hip Hop---Boom Bap","Hip Hop---Bounce",
+    "Hip Hop---Britcore","Hip Hop---Cloud Rap","Hip Hop---Conscious",
+    "Hip Hop---Crunk","Hip Hop---Cut-up/DJ","Hip Hop---DJ Battle Tool",
+    "Hip Hop---Electro","Hip Hop---G-Funk","Hip Hop---Gangsta",
+    "Hip Hop---Grime","Hip Hop---Hardcore Hip-Hop","Hip Hop---Horrorcore",
+    "Hip Hop---Instrumental","Hip Hop---Jazzy Hip-Hop","Hip Hop---Miami Bass",
+    "Hip Hop---Pop Rap","Hip Hop---Ragga HipHop","Hip Hop---RnB/Swing",
+    "Hip Hop---Screw","Hip Hop---Thug Rap","Hip Hop---Trap",
+    "Hip Hop---Trip Hop","Hip Hop---Turntablism",
+    "Jazz---Afro-Cuban Jazz","Jazz---Afrobeat","Jazz---Avant-garde Jazz",
+    "Jazz---Big Band","Jazz---Bop","Jazz---Bossa Nova",
+    "Jazz---Contemporary Jazz","Jazz---Cool Jazz","Jazz---Dixieland",
+    "Jazz---Easy Listening","Jazz---Free Improvisation","Jazz---Free Jazz",
+    "Jazz---Fusion","Jazz---Gypsy Jazz","Jazz---Hard Bop",
+    "Jazz---Jazz-Funk","Jazz---Jazz-Rock","Jazz---Latin Jazz",
+    "Jazz---Modal","Jazz---Post Bop","Jazz---Ragtime",
+    "Jazz---Smooth Jazz","Jazz---Soul-Jazz","Jazz---Space-Age","Jazz---Swing",
+    "Latin---Afro-Cuban","Latin---Baião","Latin---Batucada",
+    "Latin---Beguine","Latin---Bolero","Latin---Boogaloo",
+    "Latin---Bossanova","Latin---Cha-Cha","Latin---Charanga",
+    "Latin---Compas","Latin---Cubano","Latin---Cumbia",
+    "Latin---Descarga","Latin---Forró","Latin---Guaguancó",
+    "Latin---Guajira","Latin---Guaracha","Latin---MPB",
+    "Latin---Mambo","Latin---Mariachi","Latin---Merengue",
+    "Latin---Norteño","Latin---Nueva Cancion","Latin---Pachanga",
+    "Latin---Porro","Latin---Ranchera","Latin---Reggaeton",
+    "Latin---Rumba","Latin---Salsa","Latin---Samba",
+    "Latin---Son","Latin---Son Montuno","Latin---Tango",
+    "Latin---Tejano","Latin---Vallenato",
+    "Non-Music---Audiobook","Non-Music---Comedy","Non-Music---Dialogue",
+    "Non-Music---Education","Non-Music---Field Recording","Non-Music---Interview",
+    "Non-Music---Monolog","Non-Music---Poetry","Non-Music---Political",
+    "Non-Music---Promotional","Non-Music---Radioplay","Non-Music---Religious",
+    "Non-Music---Spoken Word",
+    "Pop---Ballad","Pop---Bollywood","Pop---Bubblegum",
+    "Pop---Chanson","Pop---City Pop","Pop---Europop",
+    "Pop---Indie Pop","Pop---J-pop","Pop---K-pop",
+    "Pop---Kayōkyoku","Pop---Light Music","Pop---Music Hall",
+    "Pop---Novelty","Pop---Parody","Pop---Schlager","Pop---Vocal",
+    "Reggae---Calypso","Reggae---Dancehall","Reggae---Dub",
+    "Reggae---Lovers Rock","Reggae---Ragga","Reggae---Reggae",
+    "Reggae---Reggae-Pop","Reggae---Rocksteady","Reggae---Roots Reggae",
+    "Reggae---Ska","Reggae---Soca",
+    "Rock---AOR","Rock---Acid Rock","Rock---Acoustic",
+    "Rock---Alternative Rock","Rock---Arena Rock","Rock---Art Rock",
+    "Rock---Atmospheric Black Metal","Rock---Avantgarde","Rock---Beat",
+    "Rock---Black Metal","Rock---Blues Rock","Rock---Brit Pop",
+    "Rock---Classic Rock","Rock---Coldwave","Rock---Country Rock",
+    "Rock---Crust","Rock---Death Metal","Rock---Deathcore",
+    "Rock---Deathrock","Rock---Depressive Black Metal","Rock---Doo Wop",
+    "Rock---Doom Metal","Rock---Dream Pop","Rock---Emo",
+    "Rock---Ethereal","Rock---Experimental","Rock---Folk Metal",
+    "Rock---Folk Rock","Rock---Funeral Doom Metal","Rock---Funk Metal",
+    "Rock---Garage Rock","Rock---Glam","Rock---Goregrind",
+    "Rock---Goth Rock","Rock---Gothic Metal","Rock---Grindcore",
+    "Rock---Grunge","Rock---Hard Rock","Rock---Hardcore",
+    "Rock---Heavy Metal","Rock---Indie Rock","Rock---Industrial",
+    "Rock---Krautrock","Rock---Lo-Fi","Rock---Lounge",
+    "Rock---Math Rock","Rock---Melodic Death Metal","Rock---Melodic Hardcore",
+    "Rock---Metalcore","Rock---Mod","Rock---Neofolk",
+    "Rock---New Wave","Rock---No Wave","Rock---Noise",
+    "Rock---Noisecore","Rock---Nu Metal","Rock---Oi",
+    "Rock---Parody","Rock---Pop Punk","Rock---Pop Rock",
+    "Rock---Pornogrind","Rock---Post Rock","Rock---Post-Hardcore",
+    "Rock---Post-Metal","Rock---Post-Punk","Rock---Power Metal",
+    "Rock---Power Pop","Rock---Power Violence","Rock---Prog Rock",
+    "Rock---Progressive Metal","Rock---Psychedelic Rock","Rock---Psychobilly",
+    "Rock---Pub Rock","Rock---Punk","Rock---Rock & Roll",
+    "Rock---Rockabilly","Rock---Shoegaze","Rock---Ska",
+    "Rock---Sludge Metal","Rock---Soft Rock","Rock---Southern Rock",
+    "Rock---Space Rock","Rock---Speed Metal","Rock---Stoner Rock",
+    "Rock---Surf","Rock---Symphonic Rock","Rock---Technical Death Metal",
+    "Rock---Thrash","Rock---Twist","Rock---Viking Metal","Rock---Yé-Yé",
+    "Stage & Screen---Musical","Stage & Screen---Score",
+    "Stage & Screen---Soundtrack","Stage & Screen---Theme",
+]
+
+# Maps each of the 400 Discogs labels → one of the ALLOWED_GENRES strings.
+# None means skip (Non-Music, Brass & Military with no clean mapping).
+DISCOGS400_TO_GENRE = {
+    # Blues
+    "Blues---Boogie Woogie": "Blues", "Blues---Chicago Blues": "Blues",
+    "Blues---Country Blues": "Blues", "Blues---Delta Blues": "Blues",
+    "Blues---Electric Blues": "Blues", "Blues---Harmonica Blues": "Blues",
+    "Blues---Jump Blues": "Blues", "Blues---Louisiana Blues": "Blues",
+    "Blues---Modern Electric Blues": "Blues", "Blues---Piano Blues": "Blues",
+    "Blues---Rhythm & Blues": "R&B", "Blues---Texas Blues": "Blues",
+    # Brass & Military — no clean genre match
+    "Brass & Military---Brass Band": None, "Brass & Military---Marches": None,
+    "Brass & Military---Military": None,
+    # Children's
+    "Children's---Educational": "Children's", "Children's---Nursery Rhymes": "Children's",
+    "Children's---Story": "Children's",
+    # Classical
+    "Classical---Baroque": "Baroque", "Classical---Choral": "Classical",
+    "Classical---Classical": "Classical", "Classical---Contemporary": "Classical",
+    "Classical---Impressionist": "Classical", "Classical---Medieval": "Classical",
+    "Classical---Modern": "Classical", "Classical---Neo-Classical": "Classical",
+    "Classical---Neo-Romantic": "Classical", "Classical---Opera": "Opera",
+    "Classical---Post-Modern": "Classical", "Classical---Renaissance": "Classical",
+    "Classical---Romantic": "Classical",
+    # Electronic
+    "Electronic---Abstract": "Electronic", "Electronic---Acid": "Electronic",
+    "Electronic---Acid House": "House", "Electronic---Acid Jazz": "Jazz",
+    "Electronic---Ambient": "Ambient", "Electronic---Bassline": "Electronic",
+    "Electronic---Beatdown": "Electronic", "Electronic---Berlin-School": "Electronic",
+    "Electronic---Big Beat": "Electronic", "Electronic---Bleep": "Electronic",
+    "Electronic---Breakbeat": "Electronic", "Electronic---Breakcore": "Electronic",
+    "Electronic---Breaks": "Electronic", "Electronic---Broken Beat": "Electronic",
+    "Electronic---Chillwave": "Ambient", "Electronic---Chiptune": "Electronic",
+    "Electronic---Dance-pop": "Pop", "Electronic---Dark Ambient": "Ambient",
+    "Electronic---Darkwave": "Electronic", "Electronic---Deep House": "House",
+    "Electronic---Deep Techno": "Techno", "Electronic---Disco": "Electronic",
+    "Electronic---Disco Polo": "Electronic", "Electronic---Donk": "Electronic",
+    "Electronic---Downtempo": "Ambient", "Electronic---Drone": "Ambient",
+    "Electronic---Drum n Bass": "Drum & Bass", "Electronic---Dub": "Reggae",
+    "Electronic---Dub Techno": "Techno", "Electronic---Dubstep": "Dubstep",
+    "Electronic---Dungeon Synth": "Electronic", "Electronic---EBM": "Electronic",
+    "Electronic---Electro": "Electronic", "Electronic---Electro House": "House",
+    "Electronic---Electroclash": "Electronic", "Electronic---Euro House": "House",
+    "Electronic---Euro-Disco": "Electronic", "Electronic---Eurobeat": "Electronic",
+    "Electronic---Eurodance": "Electronic", "Electronic---Experimental": "Electronic",
+    "Electronic---Freestyle": "Electronic", "Electronic---Future Jazz": "Jazz",
+    "Electronic---Gabber": "Electronic", "Electronic---Garage House": "House",
+    "Electronic---Ghetto": "Electronic", "Electronic---Ghetto House": "House",
+    "Electronic---Glitch": "Electronic", "Electronic---Goa Trance": "Trance",
+    "Electronic---Grime": "Hip-Hop", "Electronic---Halftime": "Electronic",
+    "Electronic---Hands Up": "Electronic", "Electronic---Happy Hardcore": "Electronic",
+    "Electronic---Hard House": "House", "Electronic---Hard Techno": "Techno",
+    "Electronic---Hard Trance": "Trance", "Electronic---Hardcore": "Electronic",
+    "Electronic---Hardstyle": "Electronic", "Electronic---Hi NRG": "Electronic",
+    "Electronic---Hip Hop": "Hip-Hop", "Electronic---Hip-House": "House",
+    "Electronic---House": "House", "Electronic---IDM": "Electronic",
+    "Electronic---Illbient": "Electronic", "Electronic---Industrial": "Electronic",
+    "Electronic---Italo House": "House", "Electronic---Italo-Disco": "Electronic",
+    "Electronic---Italodance": "Electronic", "Electronic---Jazzdance": "Electronic",
+    "Electronic---Juke": "Electronic", "Electronic---Jumpstyle": "Electronic",
+    "Electronic---Jungle": "Drum & Bass", "Electronic---Latin": "Latin",
+    "Electronic---Leftfield": "Electronic", "Electronic---Makina": "Electronic",
+    "Electronic---Minimal": "Electronic", "Electronic---Minimal Techno": "Techno",
+    "Electronic---Modern Classical": "Classical", "Electronic---Musique Concrète": "Electronic",
+    "Electronic---Neofolk": "Folk", "Electronic---New Age": "New Age",
+    "Electronic---New Beat": "Electronic", "Electronic---New Wave": "Electronic",
+    "Electronic---Noise": "Electronic", "Electronic---Nu-Disco": "Electronic",
+    "Electronic---Power Electronics": "Electronic", "Electronic---Progressive Breaks": "Electronic",
+    "Electronic---Progressive House": "House", "Electronic---Progressive Trance": "Trance",
+    "Electronic---Psy-Trance": "Trance", "Electronic---Rhythmic Noise": "Electronic",
+    "Electronic---Schranz": "Techno", "Electronic---Sound Collage": "Electronic",
+    "Electronic---Speed Garage": "Electronic", "Electronic---Speedcore": "Electronic",
+    "Electronic---Synth-pop": "Electronic", "Electronic---Synthwave": "Synthwave",
+    "Electronic---Tech House": "House", "Electronic---Tech Trance": "Trance",
+    "Electronic---Techno": "Techno", "Electronic---Trance": "Trance",
+    "Electronic---Tribal": "Electronic", "Electronic---Tribal House": "House",
+    "Electronic---Trip Hop": "Ambient", "Electronic---Tropical House": "House",
+    "Electronic---UK Garage": "Electronic", "Electronic---Vaporwave": "Electronic",
+    # Folk, World & Country
+    "Folk, World, & Country---African": "Afrobeats",
+    "Folk, World, & Country---Bluegrass": "Folk",
+    "Folk, World, & Country---Cajun": "Folk",
+    "Folk, World, & Country---Canzone Napoletana": "World Music",
+    "Folk, World, & Country---Catalan Music": "World Music",
+    "Folk, World, & Country---Celtic": "Folk",
+    "Folk, World, & Country---Country": "Country",
+    "Folk, World, & Country---Fado": "World Music",
+    "Folk, World, & Country---Flamenco": "Flamenco",
+    "Folk, World, & Country---Folk": "Folk",
+    "Folk, World, & Country---Gospel": "Gospel",
+    "Folk, World, & Country---Highlife": "Afrobeats",
+    "Folk, World, & Country---Hillbilly": "Country",
+    "Folk, World, & Country---Hindustani": "World Music",
+    "Folk, World, & Country---Honky Tonk": "Country",
+    "Folk, World, & Country---Indian Classical": "World Music",
+    "Folk, World, & Country---Laïkó": "World Music",
+    "Folk, World, & Country---Nordic": "World Music",
+    "Folk, World, & Country---Pacific": "World Music",
+    "Folk, World, & Country---Polka": "World Music",
+    "Folk, World, & Country---Raï": "World Music",
+    "Folk, World, & Country---Romani": "World Music",
+    "Folk, World, & Country---Soukous": "Afrobeats",
+    "Folk, World, & Country---Séga": "World Music",
+    "Folk, World, & Country---Volksmusik": "World Music",
+    "Folk, World, & Country---Zouk": "Latin",
+    "Folk, World, & Country---Éntekhno": "World Music",
+    # Funk / Soul
+    "Funk / Soul---Afrobeat": "Afrobeats", "Funk / Soul---Boogie": "Funk/Soul",
+    "Funk / Soul---Contemporary R&B": "R&B", "Funk / Soul---Disco": "Funk/Soul",
+    "Funk / Soul---Free Funk": "Funk/Soul", "Funk / Soul---Funk": "Funk/Soul",
+    "Funk / Soul---Gospel": "Gospel", "Funk / Soul---Neo Soul": "R&B",
+    "Funk / Soul---New Jack Swing": "R&B", "Funk / Soul---P.Funk": "Funk/Soul",
+    "Funk / Soul---Psychedelic": "Funk/Soul", "Funk / Soul---Rhythm & Blues": "R&B",
+    "Funk / Soul---Soul": "Funk/Soul", "Funk / Soul---Swingbeat": "R&B",
+    "Funk / Soul---UK Street Soul": "R&B",
+    # Hip Hop
+    "Hip Hop---Bass Music": "Hip-Hop", "Hip Hop---Boom Bap": "Hip-Hop",
+    "Hip Hop---Bounce": "Hip-Hop", "Hip Hop---Britcore": "Hip-Hop",
+    "Hip Hop---Cloud Rap": "Hip-Hop", "Hip Hop---Conscious": "Hip-Hop",
+    "Hip Hop---Crunk": "Hip-Hop", "Hip Hop---Cut-up/DJ": "Hip-Hop",
+    "Hip Hop---DJ Battle Tool": "Hip-Hop", "Hip Hop---Electro": "Electronic",
+    "Hip Hop---G-Funk": "Hip-Hop", "Hip Hop---Gangsta": "Hip-Hop",
+    "Hip Hop---Grime": "Hip-Hop", "Hip Hop---Hardcore Hip-Hop": "Hip-Hop",
+    "Hip Hop---Horrorcore": "Hip-Hop", "Hip Hop---Instrumental": "Hip-Hop",
+    "Hip Hop---Jazzy Hip-Hop": "Hip-Hop", "Hip Hop---Miami Bass": "Hip-Hop",
+    "Hip Hop---Pop Rap": "Hip-Hop", "Hip Hop---Ragga HipHop": "Hip-Hop",
+    "Hip Hop---RnB/Swing": "R&B", "Hip Hop---Screw": "Hip-Hop",
+    "Hip Hop---Thug Rap": "Hip-Hop", "Hip Hop---Trap": "Trap",
+    "Hip Hop---Trip Hop": "Ambient", "Hip Hop---Turntablism": "Hip-Hop",
+    # Jazz
+    "Jazz---Afro-Cuban Jazz": "Jazz", "Jazz---Afrobeat": "Jazz",
+    "Jazz---Avant-garde Jazz": "Jazz", "Jazz---Big Band": "Jazz",
+    "Jazz---Bop": "Jazz", "Jazz---Bossa Nova": "Jazz",
+    "Jazz---Contemporary Jazz": "Jazz", "Jazz---Cool Jazz": "Jazz",
+    "Jazz---Dixieland": "Jazz", "Jazz---Easy Listening": "Jazz",
+    "Jazz---Free Improvisation": "Jazz", "Jazz---Free Jazz": "Jazz",
+    "Jazz---Fusion": "Jazz", "Jazz---Gypsy Jazz": "Jazz",
+    "Jazz---Hard Bop": "Jazz", "Jazz---Jazz-Funk": "Jazz",
+    "Jazz---Jazz-Rock": "Jazz", "Jazz---Latin Jazz": "Jazz",
+    "Jazz---Modal": "Jazz", "Jazz---Post Bop": "Jazz",
+    "Jazz---Ragtime": "Jazz", "Jazz---Smooth Jazz": "Jazz",
+    "Jazz---Soul-Jazz": "Jazz", "Jazz---Space-Age": "Jazz", "Jazz---Swing": "Jazz",
+    # Latin
+    "Latin---Afro-Cuban": "Latin", "Latin---Baião": "Latin",
+    "Latin---Batucada": "Latin", "Latin---Beguine": "Latin",
+    "Latin---Bolero": "Latin", "Latin---Boogaloo": "Latin",
+    "Latin---Bossanova": "Latin", "Latin---Cha-Cha": "Latin",
+    "Latin---Charanga": "Latin", "Latin---Compas": "Latin",
+    "Latin---Cubano": "Latin", "Latin---Cumbia": "Cumbia",
+    "Latin---Descarga": "Latin", "Latin---Forró": "Latin",
+    "Latin---Guaguancó": "Latin", "Latin---Guajira": "Latin",
+    "Latin---Guaracha": "Latin", "Latin---MPB": "Latin",
+    "Latin---Mambo": "Latin", "Latin---Mariachi": "Latin",
+    "Latin---Merengue": "Merengue", "Latin---Norteño": "Latin",
+    "Latin---Nueva Cancion": "Latin", "Latin---Pachanga": "Latin",
+    "Latin---Porro": "Latin", "Latin---Ranchera": "Latin",
+    "Latin---Reggaeton": "Reggaetón", "Latin---Rumba": "Latin",
+    "Latin---Salsa": "Latin", "Latin---Samba": "Latin",
+    "Latin---Son": "Latin", "Latin---Son Montuno": "Latin",
+    "Latin---Tango": "Tango", "Latin---Tejano": "Latin", "Latin---Vallenato": "Latin",
+    # Non-Music — skip
+    "Non-Music---Audiobook": None, "Non-Music---Comedy": None,
+    "Non-Music---Dialogue": None, "Non-Music---Education": None,
+    "Non-Music---Field Recording": None, "Non-Music---Interview": None,
+    "Non-Music---Monolog": None, "Non-Music---Poetry": None,
+    "Non-Music---Political": None, "Non-Music---Promotional": None,
+    "Non-Music---Radioplay": None, "Non-Music---Religious": None,
+    "Non-Music---Spoken Word": None,
+    # Pop
+    "Pop---Ballad": "Pop", "Pop---Bollywood": "World Music",
+    "Pop---Bubblegum": "Pop", "Pop---Chanson": "Pop",
+    "Pop---City Pop": "Pop", "Pop---Europop": "Pop",
+    "Pop---Indie Pop": "Indie", "Pop---J-pop": "Pop",
+    "Pop---K-pop": "K-Pop", "Pop---Kayōkyoku": "Pop",
+    "Pop---Light Music": "Pop", "Pop---Music Hall": "Pop",
+    "Pop---Novelty": "Pop", "Pop---Parody": "Pop",
+    "Pop---Schlager": "Pop", "Pop---Vocal": "Pop",
+    # Reggae
+    "Reggae---Calypso": "Reggae", "Reggae---Dancehall": "Dancehall",
+    "Reggae---Dub": "Reggae", "Reggae---Lovers Rock": "Reggae",
+    "Reggae---Ragga": "Reggae", "Reggae---Reggae": "Reggae",
+    "Reggae---Reggae-Pop": "Reggae", "Reggae---Rocksteady": "Reggae",
+    "Reggae---Roots Reggae": "Reggae", "Reggae---Ska": "Reggae",
+    "Reggae---Soca": "Reggae",
+    # Rock
+    "Rock---AOR": "Rock", "Rock---Acid Rock": "Rock",
+    "Rock---Acoustic": "Acoustic", "Rock---Alternative Rock": "Alternative Rock",
+    "Rock---Arena Rock": "Rock", "Rock---Art Rock": "Rock",
+    "Rock---Atmospheric Black Metal": "Metal", "Rock---Avantgarde": "Rock",
+    "Rock---Beat": "Rock", "Rock---Black Metal": "Metal",
+    "Rock---Blues Rock": "Blues", "Rock---Brit Pop": "Indie",
+    "Rock---Classic Rock": "Rock", "Rock---Coldwave": "Rock",
+    "Rock---Country Rock": "Country", "Rock---Crust": "Punk",
+    "Rock---Death Metal": "Metal", "Rock---Deathcore": "Metal",
+    "Rock---Deathrock": "Rock", "Rock---Depressive Black Metal": "Metal",
+    "Rock---Doo Wop": "Rock", "Rock---Doom Metal": "Metal",
+    "Rock---Dream Pop": "Indie", "Rock---Emo": "Rock",
+    "Rock---Ethereal": "Ambient", "Rock---Experimental": "Rock",
+    "Rock---Folk Metal": "Metal", "Rock---Folk Rock": "Folk",
+    "Rock---Funeral Doom Metal": "Metal", "Rock---Funk Metal": "Metal",
+    "Rock---Garage Rock": "Rock", "Rock---Glam": "Rock",
+    "Rock---Goregrind": "Metal", "Rock---Goth Rock": "Rock",
+    "Rock---Gothic Metal": "Metal", "Rock---Grindcore": "Metal",
+    "Rock---Grunge": "Grunge", "Rock---Hard Rock": "Hard Rock",
+    "Rock---Hardcore": "Punk", "Rock---Heavy Metal": "Metal",
+    "Rock---Indie Rock": "Indie", "Rock---Industrial": "Electronic",
+    "Rock---Krautrock": "Rock", "Rock---Lo-Fi": "Lo-Fi",
+    "Rock---Lounge": "Jazz", "Rock---Math Rock": "Progressive Rock",
+    "Rock---Melodic Death Metal": "Metal", "Rock---Melodic Hardcore": "Punk",
+    "Rock---Metalcore": "Metal", "Rock---Mod": "Rock",
+    "Rock---Neofolk": "Folk", "Rock---New Wave": "Rock",
+    "Rock---No Wave": "Rock", "Rock---Noise": "Rock",
+    "Rock---Noisecore": "Metal", "Rock---Nu Metal": "Metal",
+    "Rock---Oi": "Punk", "Rock---Parody": "Rock",
+    "Rock---Pop Punk": "Punk", "Rock---Pop Rock": "Pop",
+    "Rock---Pornogrind": "Metal", "Rock---Post Rock": "Rock",
+    "Rock---Post-Hardcore": "Punk", "Rock---Post-Metal": "Metal",
+    "Rock---Post-Punk": "Rock", "Rock---Power Metal": "Metal",
+    "Rock---Power Pop": "Pop", "Rock---Power Violence": "Punk",
+    "Rock---Prog Rock": "Progressive Rock", "Rock---Progressive Metal": "Metal",
+    "Rock---Psychedelic Rock": "Rock", "Rock---Psychobilly": "Rock",
+    "Rock---Pub Rock": "Rock", "Rock---Punk": "Punk",
+    "Rock---Rock & Roll": "Rock", "Rock---Rockabilly": "Rock",
+    "Rock---Shoegaze": "Indie", "Rock---Ska": "Reggae",
+    "Rock---Sludge Metal": "Metal", "Rock---Soft Rock": "Pop",
+    "Rock---Southern Rock": "Rock", "Rock---Space Rock": "Rock",
+    "Rock---Speed Metal": "Metal", "Rock---Stoner Rock": "Rock",
+    "Rock---Surf": "Rock", "Rock---Symphonic Rock": "Rock",
+    "Rock---Technical Death Metal": "Metal", "Rock---Thrash": "Metal",
+    "Rock---Twist": "Rock", "Rock---Viking Metal": "Metal", "Rock---Yé-Yé": "Pop",
+    # Stage & Screen
+    "Stage & Screen---Musical": "Musical Theatre",
+    "Stage & Screen---Score": "Film Score",
+    "Stage & Screen---Soundtrack": "Film Score",
+    "Stage & Screen---Theme": "Film Score",
+}
+
 # 1. GLOBAL VARIABLES FOR AI MODELS
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 yamnet_model       = None
@@ -68,26 +449,23 @@ mood_model         = None
 mood_encoder       = None
 instrument_model   = None
 instrument_encoder = None   # list of class names
-feature_scaler     = None   # StandardScaler fitted on training set
+feature_scaler     = None   # kept for backward compat, no longer used for genre
 beatnet_estimator  = None   # BeatNet time signature detector (None = fallback to autocorrelation)
 _beatnet_pool      = None   # Dedicated thread pool for BeatNet (1 worker, 5s timeout per request)
 
 # Hierarchical genre models
-stage1_model    = None   # broad category classifier (10 categories)
+stage1_model    = None   # broad category classifier (kept, unused for genre scoring)
 stage1_encoder  = None
-stage2_models   = {}     # {category_name: Keras model}
-stage2_encoders = {}     # {category_name: LabelEncoder}
-
-STAGE2_CATEGORIES = [
-    'Latin', 'Electronic', 'Rock_Metal', 'Classical_Cinematic',
-    'HipHop_Urban', 'Pop_Indie', 'Folk_Country_Roots', 'Jazz_Blues',
-    'Ambient_Chill', 'Theatrical',
-]
 
 # Discogs TF1 frozen graph (loaded at startup)
 discogs_session      = None
 discogs_input_tensor = None
 discogs_embed_tensor = None
+
+# MTG genre_discogs400 classification head
+genre400_session      = None
+genre400_input_tensor = None
+genre400_output_tensor = None
 
 # Librosa constants — must match extract_discogs_features.py exactly
 SR_LIBROSA  = 22050
@@ -468,10 +846,11 @@ def run_discogs_inference(patches: np.ndarray) -> np.ndarray:
 def _load_models_sync():
     """Load all models synchronously — runs in a thread pool so the event loop
     (and therefore /health) stays responsive during the 60-90 second load."""
-    global yamnet_model, mood_model, mood_encoder, feature_scaler
+    global yamnet_model, mood_model, mood_encoder
     global instrument_model, instrument_encoder
-    global stage1_model, stage1_encoder, stage2_models, stage2_encoders
+    global stage1_model, stage1_encoder
     global discogs_session, discogs_input_tensor, discogs_embed_tensor
+    global genre400_session, genre400_input_tensor, genre400_output_tensor
     global _models_ready
     print("🚪 Port is open! Now loading AI brains in a background thread...")
 
@@ -491,9 +870,18 @@ def _load_models_sync():
     discogs_embed_tensor = discogs_graph.get_tensor_by_name('PartitionedCall:1')
     print(f"✅ Discogs-EfficientNet loaded from {discogs_pb}")
 
-    # ── Feature scaler (required — normalises 2641-dim Discogs features) ──
-    with open(os.path.join(BASE_DIR, 'feature_scaler.pkl'), 'rb') as f:
-        feature_scaler = pickle.load(f)
+    # ── MTG genre_discogs400 classification head ──────────────────────────────
+    genre400_pb = os.path.join(BASE_DIR, 'genre_discogs400-discogs-effnet-1.pb')
+    genre400_graph = tf.Graph()
+    with genre400_graph.as_default():
+        gdef = tf.compat.v1.GraphDef()
+        with open(genre400_pb, 'rb') as fh:
+            gdef.ParseFromString(fh.read())
+        tf.import_graph_def(gdef, name='')
+    genre400_session      = tf.compat.v1.Session(graph=genre400_graph)
+    genre400_input_tensor  = genre400_graph.get_tensor_by_name('serving_default_model_Placeholder:0')
+    genre400_output_tensor = genre400_graph.get_tensor_by_name('PartitionedCall:0')
+    print("✅ MTG genre_discogs400 loaded (400 Discogs genres, 1280-dim input)")
 
     # ── Mood model (trained on 1024-dim YAMNet mean embeddings) ──
     mood_model = tf.keras.models.load_model(
@@ -516,30 +904,6 @@ def _load_models_sync():
             instrument_encoder = pickle.load(f)
         print("✅ Instrument model loaded")
 
-    # ── Hierarchical genre models (trained on 2641-dim Discogs features) ──
-    stage1_model = tf.keras.models.load_model(
-        os.path.join(BASE_DIR, 'stage1_model.h5'),
-        compile=False,
-    )
-    with open(os.path.join(BASE_DIR, 'stage1_model_encoder.pkl'), 'rb') as f:
-        stage1_encoder = pickle.load(f)
-
-    for cat in STAGE2_CATEGORIES:
-        model_path   = os.path.join(BASE_DIR, f'stage2_{cat}_model.h5')
-        encoder_path = os.path.join(BASE_DIR, f'stage2_{cat}_model_encoder.pkl')
-        if os.path.exists(model_path):
-            stage2_models[cat] = tf.keras.models.load_model(
-                model_path,
-                custom_objects={'loss_fn': focal_loss(gamma=2.0, alpha=0.25)},
-                compile=False,
-            )
-        if os.path.exists(encoder_path):
-            with open(encoder_path, 'rb') as f:
-                stage2_encoders[cat] = pickle.load(f)
-
-    loaded_s2 = sum(1 for cat in STAGE2_CATEGORIES if cat in stage2_models)
-    print(f"✅ Feature scaler loaded  (2641-dim normalisation)")
-    print(f"✅ Genre models: Stage 1 + {loaded_s2}/{len(STAGE2_CATEGORIES)} Stage 2 models loaded")
     print("✅ All AI Brains successfully loaded and ready for traffic!")
 
     # ── BeatNet time signature estimator ──
@@ -621,7 +985,7 @@ class BriefRequest(BaseModel):
 # 🔥 THIS IS THE FIX: Disabled limiter to prevent Typing crash
 # @limiter.limit("10/minute")
 async def predict(request: Request, file: UploadFile = File(...)):
-    if yamnet_model is None or stage1_model is None or discogs_session is None:
+    if yamnet_model is None or genre400_session is None or discogs_session is None:
         raise HTTPException(status_code=503, detail="AI is still warming up. Try again in 30 seconds!")
         
     validate_audio_upload(file)
@@ -716,10 +1080,6 @@ async def predict(request: Request, file: UploadFile = File(...)):
         discogs_mean = np.mean(discogs_embs, axis=0)          # (1280,)
         discogs_std  = np.std(discogs_embs, axis=0)           # (1280,)
 
-        # ── Combine → 2641-dim → scale ────────────────────────────────────────
-        raw_feat = np.concatenate([discogs_mean, discogs_std, librosa_feats])  # (2641,)
-        X_genre  = feature_scaler.transform(raw_feat[np.newaxis, :])           # (1, 2641)
-
         # ── Mood + instrument both use 1024-dim YAMNet mean embedding ───────────
         X_mood = yamnet_mean[np.newaxis, :]   # (1, 1024)
         mood_preds = mood_model.predict(X_mood, verbose=0)
@@ -729,97 +1089,35 @@ async def predict(request: Request, file: UploadFile = File(...)):
         # Far more accurate than our small custom classifier.
         detected_instruments = detect_instruments_yamnet(class_scores_np)
 
-        # ── Genre prediction: Stage 1 as soft filter + Stage 2 for specific genre
-        #
-        # Stage 1 predicts which broad category the track belongs to.
-        # Even at ~48% hard accuracy, its probability distribution is useful:
-        # a track that Stage 1 gives 5% Latin probability should not be classified
-        # as Bossa Nova just because Stage2_Latin is overconfident.
-        #
-        # Scoring formula:
-        #   stage1_weight  = Stage 1 softmax probability for this category
-        #   stage2_adj     = (stage2_raw - 1/n) / (1 - 1/n)  [normalised: 0=random, 1=certain]
-        #   final_score    = stage2_adj * (stage1_weight ^ STAGE1_INFLUENCE)
-        # The normalised formula is critical: models with more classes had a scoring
-        # advantage under the old "raw - 1/n" formula (e.g. Latin with 12 genres only
-        # deducted 0.083 vs Ambient with 4 genres deducting 0.25 — same raw softmax
-        # gave Latin a 2.8x scoring edge). Normalising puts all Stage 2 models on an
-        # equal footing regardless of how many sub-genres they contain.
-        #
-        # STAGE1_INFLUENCE controls how hard Stage 1 filters Stage 2:
-        #   0.0 = ignore Stage 1 entirely (Stage 2 competes purely on its own)
-        #   0.2 = very light touch (Stage 1 only breaks near-ties)
-        #   0.5 = soft filter (Stage 1 nudges but doesn't dominate)
-        #   1.0 = full multiplication (Stage 1 probability directly scales Stage 2)
-        # Using 0.2: Stage 1 is only ~45% accurate so we let Stage 2 lead.
-        # The well-trained Stage 2 models (Ambient 69%, Folk 68%, Classical 67%)
-        # are far more reliable than Stage 1's category routing.
+        # ── Genre prediction — MTG genre_discogs400 (400 Discogs styles) ────────
+        # Feed the per-frame-averaged Discogs-EffNet embedding (1280-dim) through
+        # the MTG classification head. Outputs sigmoid probabilities for 400 genres.
+        # Trained on millions of Discogs tracks — far more reliable than our custom
+        # Stage 2 models for distinguishing Folk from Rock etc.
+        g400_probs = genre400_session.run(
+            genre400_output_tensor,
+            {genre400_input_tensor: discogs_mean[np.newaxis, :]}
+        )[0]  # (400,)
 
-        # STAGE1_INFLUENCE controls how hard Stage 1 gates Stage 2 results.
-        # At 0.2 (old): Stage 2's raw confidence almost always dominated, causing
-        # Rock_Metal to beat Pop_Indie even when Stage 1 correctly said Pop_Indie.
-        # At 0.5 (new): Stage 1 has meaningful weight — if Stage 1 gives Rock_Metal
-        # only 15%, it takes a 0.15^0.5 = 0.387 penalty, suppressing overconfident
-        # Stage 2 models that bleed into wrong categories.
-        STAGE1_INFLUENCE = 0.5
-
-        # STAGE1_MIN_GATE: hard exclude entire Stage 2 categories where Stage 1
-        # gives < 3% probability. This blocks Flamenco/Latin bleed when Stage 1
-        # is certain the song isn't Latin (giving it 1-2%), regardless of how
-        # overconfident Stage2_Latin is.
-        STAGE1_MIN_GATE = 0.03
-
-        # Run Stage 1 — get per-category probability distribution
-        # Stage 1 now uses YAMNet features (1024-dim) — better for broad category routing
-        # Stage 2 still uses Discogs features (2641-dim) — better for fine-grained sub-genres
-        X_stage1     = yamnet_mean[np.newaxis, :]                   # (1, 1024)
-        stage1_preds = stage1_model.predict(X_stage1, verbose=0)[0] # shape: (n_categories,)
-        stage1_cat_probs = {
-            str(stage1_encoder.inverse_transform([i])[0]): float(stage1_preds[i])
-            for i in range(len(stage1_encoder.classes_))
-        }
-        print(f"Stage 1 category probs: { {k: round(v,3) for k,v in sorted(stage1_cat_probs.items(), key=lambda x: -x[1])} }")
-
-        all_candidates = []  # (final_score, raw_conf, genre_label)
-
-        for _cat in STAGE2_CATEGORIES:
-            _s2_model   = stage2_models.get(_cat)
-            _s2_encoder = stage2_encoders.get(_cat)
-            if _s2_encoder is None:
+        # Accumulate max sigmoid probability per clean genre name
+        genre_scores: dict[str, float] = {}
+        for _i, _prob in enumerate(g400_probs):
+            _label = DISCOGS400_CLASSES[_i]
+            _clean = DISCOGS400_TO_GENRE.get(_label)
+            if _clean is None:
                 continue
-            n_cls = len(_s2_encoder.classes_)
-            _s1_weight = stage1_cat_probs.get(_cat, 1.0 / len(STAGE2_CATEGORIES))
+            if _clean not in genre_scores or _prob > genre_scores[_clean]:
+                genre_scores[_clean] = float(_prob)
 
-            # Hard gate: skip entire category if Stage 1 strongly disagrees.
-            # Prevents overconfident Stage 2 models from bleeding across categories.
-            if _s1_weight < STAGE1_MIN_GATE:
-                print(f"  Skipping {_cat} (Stage1={_s1_weight:.3f} < gate {STAGE1_MIN_GATE})")
-                continue
+        ranked = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
+        print(f"Top 5 genre candidates: {[(g, round(s, 4)) for g, s in ranked[:5]]}")
 
-            if _s2_model is not None:
-                _preds = _s2_model.predict(X_genre, verbose=0)
-                for _i in range(n_cls):
-                    _genre  = str(_s2_encoder.inverse_transform([_i])[0])
-                    _raw    = float(_preds[0][_i])
-                    _adj    = (_raw - (1.0 / n_cls)) / (1.0 - (1.0 / n_cls))
-                    _final  = _adj * (_s1_weight ** STAGE1_INFLUENCE)
-                    all_candidates.append((_final, _raw, _genre))
-            else:
-                # Single-genre category — add with neutral score weighted by Stage 1
-                _genre  = str(_s2_encoder.classes_[0])
-                _final  = 0.0
-                all_candidates.append((_final, 1.0 / n_cls, _genre))
-
-        # Sort by final score descending
-        all_candidates.sort(key=lambda x: x[0], reverse=True)
-        print(f"Top 5 genre candidates: {[(g, round(s,4)) for s,_,g in all_candidates[:5]]}")
-
-        primary_genre        = all_candidates[0][2]
-        primary_genre_conf   = all_candidates[0][1]
-        secondary_genre      = all_candidates[1][2] if len(all_candidates) > 1 else primary_genre
-        secondary_genre_conf = all_candidates[1][1] if len(all_candidates) > 1 else primary_genre_conf
-        tertiary_genre       = all_candidates[2][2] if len(all_candidates) > 2 else secondary_genre
-        tertiary_genre_conf  = all_candidates[2][1] if len(all_candidates) > 2 else secondary_genre_conf
+        primary_genre        = ranked[0][0]
+        primary_genre_conf   = ranked[0][1]
+        secondary_genre      = ranked[1][0] if len(ranked) > 1 else primary_genre
+        secondary_genre_conf = ranked[1][1] if len(ranked) > 1 else primary_genre_conf
+        tertiary_genre       = ranked[2][0] if len(ranked) > 2 else secondary_genre
+        tertiary_genre_conf  = ranked[2][1] if len(ranked) > 2 else secondary_genre_conf
 
         # ── Top 3 moods — model knows 14, return ranked top 3 ────────────────
         mood_scores = mood_preds[0]

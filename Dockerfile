@@ -35,37 +35,9 @@ COPY --from=builder /install /usr/local
 COPY main.py .
 COPY requirements.txt .
 
-# Discogs EfficientNet frozen graph
+# Discogs EfficientNet frozen graph + MTG genre classification head
 COPY discogs-effnet-bs64-1.pb .
-
-# Feature scalers
-COPY feature_scaler.pkl .
-
-# Stage 1 model
-COPY stage1_model.h5 .
-COPY stage1_model_encoder.pkl .
-
-# Stage 2 models — one per genre category
-COPY stage2_Ambient_Chill_model.h5 .
-COPY stage2_Ambient_Chill_model_encoder.pkl .
-COPY stage2_Classical_Cinematic_model.h5 .
-COPY stage2_Classical_Cinematic_model_encoder.pkl .
-COPY stage2_Electronic_model.h5 .
-COPY stage2_Electronic_model_encoder.pkl .
-COPY stage2_Folk_Country_Roots_model.h5 .
-COPY stage2_Folk_Country_Roots_model_encoder.pkl .
-COPY stage2_HipHop_Urban_model.h5 .
-COPY stage2_HipHop_Urban_model_encoder.pkl .
-COPY stage2_Jazz_Blues_model.h5 .
-COPY stage2_Jazz_Blues_model_encoder.pkl .
-COPY stage2_Latin_model.h5 .
-COPY stage2_Latin_model_encoder.pkl .
-COPY stage2_Pop_Indie_model.h5 .
-COPY stage2_Pop_Indie_model_encoder.pkl .
-COPY stage2_Rock_Metal_model.h5 .
-COPY stage2_Rock_Metal_model_encoder.pkl .
-COPY stage2_Theatrical_model.h5 .
-COPY stage2_Theatrical_model_encoder.pkl .
+COPY genre_discogs400-discogs-effnet-1.pb .
 
 # Mood model
 COPY yamnet_mood_model.h5 .
