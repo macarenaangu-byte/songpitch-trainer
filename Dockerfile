@@ -9,18 +9,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libgomp1 \
     build-essential \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python packages into a separate prefix so we can copy them cleanly
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# Pre-download YAMNet SavedModel from Google's TF Hub GCS bucket
-# Avoids hub.load() at runtime which causes TF op registration conflicts
-RUN mkdir -p /app/yamnet_model && \
-    curl -fsSL "https://storage.googleapis.com/tfhub-modules/google/yamnet/1.tar.gz" | \
-    tar xz -C /app/yamnet_model
 
 
 # ─── Stage 2: Runtime image ───────────────────────────────────────────────────
