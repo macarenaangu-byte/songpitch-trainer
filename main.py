@@ -789,9 +789,6 @@ def focal_loss(gamma=2.0, alpha=0.25):
         return tf.reduce_sum(weight * cross_entropy, axis=-1)
     return loss_fn
 
-import essentia.standard as es
-
-
 # 🔥 THIS IS THE FIX: Load models AFTER the server port opens
 def _load_models_sync():
     """Load all models synchronously — runs in a thread pool so the event loop
@@ -808,12 +805,17 @@ def _load_models_sync():
     # ── Essentia Discogs-EfficientNet genre predictor ──────────────────────────
     # Essentia handles mel preprocessing internally (unit-sum filter weights,
     # log compression, 96-mel 16kHz) — this matches the model's training pipeline.
-    discogs_pb = os.path.join(BASE_DIR, 'discogs-effnet-bs64-1.pb')
-    effnet_predictor = es.TensorflowPredictEffnetDiscogs(
-        graphFilename=discogs_pb,
-        output="PartitionedCall:0"   # 400-class sigmoid predictions per patch
-    )
-    print(f"✅ Essentia Discogs-EfficientNet loaded — 400 Discogs genre classes")
+    try:
+        import essentia.standard as es
+        discogs_pb = os.path.join(BASE_DIR, 'discogs-effnet-bs64-1.pb')
+        effnet_predictor = es.TensorflowPredictEffnetDiscogs(
+            graphFilename=discogs_pb,
+            output="PartitionedCall:0"   # 400-class sigmoid predictions per patch
+        )
+        print(f"✅ Essentia Discogs-EfficientNet loaded — 400 Discogs genre classes")
+    except Exception as e:
+        print(f"❌ Essentia failed to load: {type(e).__name__}: {e}")
+        print("⚠️  Genre prediction will be unavailable this session")
 
     # ── Mood model (trained on 1024-dim YAMNet mean embeddings) ──
     mood_model = tf.keras.models.load_model(
@@ -917,7 +919,7 @@ class BriefRequest(BaseModel):
 # 🔥 THIS IS THE FIX: Disabled limiter to prevent Typing crash
 # @limiter.limit("10/minute")
 async def predict(request: Request, file: UploadFile = File(...)):
-    if yamnet_model is None or effnet_predictor is None:
+    if yamnet_model is None:
         raise HTTPException(status_code=503, detail="AI is still warming up. Try again in 30 seconds!")
         
     validate_audio_upload(file)
@@ -1004,26 +1006,28 @@ async def predict(request: Request, file: UploadFile = File(...)):
         detected_instruments = detect_instruments_yamnet(class_scores_np)
 
         # ── Genre prediction via Essentia Discogs-EfficientNet (400 classes) ───
-        # MonoLoader resamples to 16kHz internally; Essentia handles mel preprocessing
-        # correctly (unit-sum filter weights) — this is what failed with librosa.
-        audio_es = es.MonoLoader(filename=temp_path, sampleRate=16000)()
-        genre_patch_preds = effnet_predictor(audio_es)   # (N_patches, 400) sigmoid per patch
-        genre_probs = np.mean(genre_patch_preds, axis=0) # (400,) averaged over patches
+        if effnet_predictor is not None:
+            import essentia.standard as es
+            audio_es = es.MonoLoader(filename=temp_path, sampleRate=16000)()
+            genre_patch_preds = effnet_predictor(audio_es)   # (N_patches, 400) sigmoid per patch
+            genre_probs = np.mean(genre_patch_preds, axis=0) # (400,) averaged over patches
 
-        # Map 400 Discogs labels → our app genre names, keep max prob per clean name
-        genre_scores: dict[str, float] = {}
-        for _i, _prob in enumerate(genre_probs.tolist()):
-            _label = DISCOGS400_CLASSES[_i]
-            _clean = DISCOGS400_TO_GENRE.get(_label)
-            if _clean is None:
-                continue
-            if _clean not in genre_scores or _prob > genre_scores[_clean]:
-                genre_scores[_clean] = float(_prob)
+            genre_scores: dict[str, float] = {}
+            for _i, _prob in enumerate(genre_probs.tolist()):
+                _label = DISCOGS400_CLASSES[_i]
+                _clean = DISCOGS400_TO_GENRE.get(_label)
+                if _clean is None:
+                    continue
+                if _clean not in genre_scores or _prob > genre_scores[_clean]:
+                    genre_scores[_clean] = float(_prob)
 
-        ranked = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
-        top10_raw = sorted(zip(genre_probs.tolist(), DISCOGS400_CLASSES), reverse=True)[:10]
-        print(f"Top 10 Discogs labels: {[(lbl, round(p,4)) for p,lbl in top10_raw]}")
-        print(f"Top 5 genre candidates: {[(g, round(s,4)) for g,s in ranked[:5]]}")
+            ranked = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
+            top10_raw = sorted(zip(genre_probs.tolist(), DISCOGS400_CLASSES), reverse=True)[:10]
+            print(f"Top 10 Discogs labels: {[(lbl, round(p,4)) for p,lbl in top10_raw]}")
+            print(f"Top 5 genre candidates: {[(g, round(s,4)) for g,s in ranked[:5]]}")
+        else:
+            print("⚠️  Essentia unavailable — returning unknown genre")
+            ranked = [("Unknown", 0.0)]
 
         primary_genre        = ranked[0][0]
         primary_genre_conf   = ranked[0][1]
