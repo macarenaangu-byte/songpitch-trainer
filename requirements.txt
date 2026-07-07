@@ -12,3 +12,4 @@ slowapi>=0.1.9
 pydantic>=2.5.0
 pyloudnorm>=0.1.1
 scipy>=1.11.0
+BeatNet>=1.0
