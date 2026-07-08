@@ -34,6 +34,7 @@ COPY --from=builder /install /usr/local
 
 # Copy application code and model files
 COPY main.py .
+COPY discogs_predict.py .
 COPY requirements.txt .
 
 # Discogs-EfficientNet frozen graph (loaded via tf.compat.v1.Session — no essentia needed)

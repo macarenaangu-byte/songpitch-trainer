@@ -9,6 +9,7 @@ import numpy as np
 import pickle
 import os
 import json
+import subprocess
 import concurrent.futures
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -450,9 +451,8 @@ instrument_model   = None
 instrument_encoder = None
 beatnet_estimator  = None
 _beatnet_pool      = None
-discogs_session    = None   # TF1 compat Session for Discogs-EfficientNet frozen graph
-discogs_input_t    = None   # serving_default_melspectrogram:0
-discogs_genre_t    = None   # PartitionedCall:0 → (64, 400) genre probabilities
+DISCOGS_PB     = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'discogs-effnet-bs64-1.pb')
+DISCOGS_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'discogs_predict.py')
 
 # Librosa constants — must match extract_discogs_features.py exactly
 SR_LIBROSA  = 22050
@@ -787,33 +787,12 @@ def focal_loss(gamma=2.0, alpha=0.25):
         return tf.reduce_sum(weight * cross_entropy, axis=-1)
     return loss_fn
 
-def compute_mel_patches(y16: np.ndarray):
-    """Log-mel spectrogram patches matching Discogs-EfficientNet's expected input spec.
-
-    Matches essentia's TensorflowPredictEffnetDiscogs internal pipeline:
-    - MelBands(normalize='unit_tri', type='power') → norm=None in librosa
-    - UnaryOperator(type='log') → natural log, no col-sum normalization
-    """
-    mel = librosa.feature.melspectrogram(
-        y=y16, sr=SR_DISCOGS,
-        n_fft=N_FFT_D, hop_length=HOP_LEN_D,
-        n_mels=N_MELS_D, fmin=FMIN_D, fmax=FMAX_D,
-        power=2.0,
-        # norm='slaney' (default) = essentia's normalize='unit_tri': 2/(fmax-fmin) per filter
-    )  # (96, T)
-    mel = np.log(mel + 1e-7)    # natural log (essentia's UnaryOperator)
-    mel = mel.T.astype(np.float32)  # (T, 96)
-    patches = [mel[s:s + PATCH_FRAMES] for s in range(0, len(mel) - PATCH_FRAMES + 1, PATCH_HOP)]
-    return np.array(patches, dtype=np.float32) if patches else None
-
-
 # 🔥 THIS IS THE FIX: Load models AFTER the server port opens
 def _load_models_sync():
     """Load all models synchronously — runs in a thread pool so the event loop
     (and therefore /health) stays responsive during the 60-90 second load."""
     global yamnet_model, mood_model, mood_encoder
     global instrument_model, instrument_encoder
-    global discogs_session, discogs_input_t, discogs_genre_t
     global _models_ready
     print("🚪 Port is open! Now loading AI brains in a background thread...")
 
@@ -823,25 +802,10 @@ def _load_models_sync():
     yamnet_model = tf.saved_model.load(os.path.join(BASE_DIR, 'yamnet_model'))
     print("✅ YAMNet loaded via tf.saved_model.load")
 
-    # ── Discogs-EfficientNet via TF frozen graph (pure pip-TF, no essentia) ──────
-    # essentia-tensorflow bundles its own old TF runtime which crashes when
-    # pip-tensorflow is also present (ALREADY_EXISTS: Op with name Bitcast).
-    # Loading the .pb directly with tf.compat.v1.Session avoids that conflict.
-    try:
-        discogs_pb = os.path.join(BASE_DIR, 'discogs-effnet-bs64-1.pb')
-        _dg = tf.Graph()
-        with _dg.as_default():
-            _gdef = tf.compat.v1.GraphDef()
-            with open(discogs_pb, 'rb') as _fh:
-                _gdef.ParseFromString(_fh.read())
-            tf.import_graph_def(_gdef, name='')
-        discogs_session = tf.compat.v1.Session(graph=_dg)
-        discogs_input_t = _dg.get_tensor_by_name('serving_default_melspectrogram:0')
-        discogs_genre_t = _dg.get_tensor_by_name('PartitionedCall:0')
-        print("✅ Discogs-EfficientNet loaded via TF frozen graph — 400 genre classes")
-    except Exception as e:
-        print(f"❌ Discogs model failed to load: {type(e).__name__}: {e}")
-        print("⚠️  Genre prediction will be unavailable this session")
+    # Discogs-EfficientNet runs in a subprocess (discogs_predict.py) per request.
+    # This avoids the ALREADY_EXISTS: Op with name Bitcast crash that occurs when
+    # essentia's bundled old TF and pip-tensorflow are both loaded in the same process.
+    print(f"✅ Discogs-EfficientNet will run via subprocess (discogs_predict.py)")
 
     # ── Mood model (trained on 1024-dim YAMNet mean embeddings) ──
     mood_model = tf.keras.models.load_model(
@@ -1031,21 +995,15 @@ async def predict(request: Request, file: UploadFile = File(...)):
         # ── Instrument detection via YAMNet AudioSet classes ─────────────────
         detected_instruments = detect_instruments_yamnet(class_scores_np)
 
-        # ── Genre prediction via Discogs-EfficientNet TF frozen graph (400 classes) ──
-        if discogs_session is not None:
-            patches = compute_mel_patches(y16)
-            if patches is not None and len(patches) > 0:
-                print(f"[Discogs] {len(patches)} patches, mel range {patches.min():.2f}..{patches.max():.2f}")
-                all_preds = []
-                for _i in range(0, len(patches), BATCH_SIZE_D):
-                    batch = patches[_i:_i + BATCH_SIZE_D]
-                    actual = len(batch)
-                    if actual < BATCH_SIZE_D:
-                        pad = np.zeros((BATCH_SIZE_D - actual, PATCH_FRAMES, N_MELS_D), dtype=np.float32)
-                        batch = np.concatenate([batch, pad], axis=0)
-                    preds = discogs_session.run(discogs_genre_t, {discogs_input_t: batch})
-                    all_preds.append(preds[:actual])
-                genre_probs = np.mean(np.concatenate(all_preds, axis=0), axis=0)  # (400,)
+        # ── Genre via Discogs-EfficientNet subprocess (essentia isolated from pip-TF) ──
+        try:
+            _env = {**os.environ, 'TF_CPP_MIN_LOG_LEVEL': '3', 'TF_ENABLE_ONEDNN_OPTS': '0'}
+            _proc = subprocess.run(
+                ['python3', DISCOGS_SCRIPT, temp_path, DISCOGS_PB],
+                capture_output=True, text=True, timeout=30, env=_env,
+            )
+            if _proc.returncode == 0 and _proc.stdout.strip():
+                genre_probs = np.array(json.loads(_proc.stdout.strip()), dtype=np.float32)
 
                 genre_scores: dict[str, float] = {}
                 for _i, _prob in enumerate(genre_probs.tolist()):
@@ -1061,10 +1019,13 @@ async def predict(request: Request, file: UploadFile = File(...)):
                 print(f"Top 10 Discogs labels: {[(lbl, round(p,4)) for p,lbl in top10_raw]}")
                 print(f"Top 5 genre candidates: {[(g, round(s,4)) for g,s in ranked[:5]]}")
             else:
-                print("⚠️  No mel patches extracted from audio — returning unknown genre")
+                print(f"⚠️  Discogs subprocess failed (rc={_proc.returncode}): {_proc.stderr[:300]}")
                 ranked = [("Unknown", 0.0)]
-        else:
-            print("⚠️  Discogs model unavailable — returning unknown genre")
+        except subprocess.TimeoutExpired:
+            print("⚠️  Discogs subprocess timed out after 30s")
+            ranked = [("Unknown", 0.0)]
+        except Exception as _e:
+            print(f"⚠️  Discogs genre prediction error: {_e}")
             ranked = [("Unknown", 0.0)]
 
         primary_genre        = ranked[0][0]
