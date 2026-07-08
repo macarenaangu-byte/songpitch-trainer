@@ -442,15 +442,51 @@ DISCOGS400_TO_GENRE = {
     "Stage & Screen---Theme": "Film Score",
 }
 
+# Maps YAMNet genre model class names → clean display genre strings.
+# The YAMNet model was trained on our specific genre taxonomy, so secondary/tertiary
+# predictions from it are better calibrated than Discogs 400-class output for our catalog.
+YAMNET_GENRE_MAP = {
+    'genre_Acoustic': 'Acoustic',         'genre_Afrobeats': 'Afrobeats',
+    'genre_Alternative_Rock': 'Alternative Rock', 'genre_Ambient': 'Ambient',
+    'genre_Bachata': 'Bachata',           'genre_Baroque': 'Baroque',
+    'genre_Blues': 'Blues',               'genre_Bossa_Nova': 'Latin',
+    'genre_Childrens': "Children's",      'genre_Cinematic': 'Cinematic',
+    'genre_Classical': 'Classical',       'genre_Corporate': 'Corporate',
+    'genre_Country': 'Country',           'genre_Cumbia': 'Cumbia',
+    'genre_Dancehall': 'Dancehall',       'genre_Drum_and_Bass': 'Drum & Bass',
+    'genre_Dubstep': 'Dubstep',           'genre_EDM': 'EDM',
+    'genre_Electronic': 'Electronic',     'genre_Film_Score': 'Film Score',
+    'genre_Flamenco': 'Flamenco',         'genre_Folk': 'Folk',
+    'genre_Funk_Soul': 'Funk/Soul',       'genre_Gospel': 'Gospel',
+    'genre_Grunge': 'Grunge',             'genre_Hard_Rock': 'Hard Rock',
+    'genre_Hip-Hop': 'Hip-Hop',           'genre_House': 'House',
+    'genre_HyperPop': 'HyperPop',         'genre_Indie': 'Indie',
+    'genre_Jazz': 'Jazz',                 'genre_KPop': 'K-Pop',
+    'genre_Latin': 'Latin',               'genre_Lo_Fi': 'Lo-Fi',
+    'genre_Merengue': 'Merengue',         'genre_Metal': 'Metal',
+    'genre_Musical_Theatre': 'Musical Theatre', 'genre_New_Age': 'New Age',
+    'genre_Opera': 'Opera',               'genre_Pop': 'Pop',
+    'genre_Progressive_Rock': 'Progressive Rock', 'genre_Punk': 'Punk',
+    'genre_R&B': 'R&B',                   'genre_Reggae': 'Reggae',
+    'genre_Reggaeton': 'Reggaetón',       'genre_Rock': 'Rock',
+    'genre_Salsa': 'Latin',               'genre_Samba': 'Latin',
+    'genre_Synthwave': 'Synthwave',       'genre_Tango': 'Tango',
+    'genre_Techno': 'Techno',             'genre_Trance': 'Trance',
+    'genre_Trap': 'Trap',                 'genre_Trap_Latino': 'Trap Latino',
+    'genre_Urbano': 'Urbano',             'genre_World_Music': 'World Music',
+}
+
 # 1. GLOBAL VARIABLES FOR AI MODELS
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-yamnet_model       = None   # tf.saved_model.load — avoids hub.load TF op conflict
-mood_model         = None
-mood_encoder       = None
-instrument_model   = None
-instrument_encoder = None
-beatnet_estimator  = None
-_beatnet_pool      = None
+yamnet_model        = None   # tf.saved_model.load — avoids hub.load TF op conflict
+yamnet_genre_model  = None   # genre classifier trained on YAMNet 1024-dim embeddings
+yamnet_genre_encoder = None
+mood_model          = None
+mood_encoder        = None
+instrument_model    = None
+instrument_encoder  = None
+beatnet_estimator   = None
+_beatnet_pool       = None
 DISCOGS_PB     = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'discogs-effnet-bs64-1.pb')
 DISCOGS_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'discogs_predict.py')
 
@@ -791,7 +827,8 @@ def focal_loss(gamma=2.0, alpha=0.25):
 def _load_models_sync():
     """Load all models synchronously — runs in a thread pool so the event loop
     (and therefore /health) stays responsive during the 60-90 second load."""
-    global yamnet_model, mood_model, mood_encoder
+    global yamnet_model, yamnet_genre_model, yamnet_genre_encoder
+    global mood_model, mood_encoder
     global instrument_model, instrument_encoder
     global _models_ready
     print("🚪 Port is open! Now loading AI brains in a background thread...")
@@ -806,6 +843,14 @@ def _load_models_sync():
     # This avoids the ALREADY_EXISTS: Op with name Bitcast crash that occurs when
     # essentia's bundled old TF and pip-tensorflow are both loaded in the same process.
     print(f"✅ Discogs-EfficientNet will run via subprocess (discogs_predict.py)")
+
+    # ── YAMNet genre model (56 classes, same 1024-dim embedding input as mood) ──
+    genre_model_path = os.path.join(BASE_DIR, 'yamnet_genre_model.h5')
+    if os.path.exists(genre_model_path):
+        yamnet_genre_model = tf.keras.models.load_model(genre_model_path, compile=False)
+        with open(os.path.join(BASE_DIR, 'yamnet_genre_model_encoder.pkl'), 'rb') as f:
+            yamnet_genre_encoder = pickle.load(f)
+        print("✅ YAMNet genre model loaded (secondary/tertiary genre classification)")
 
     # ── Mood model (trained on 1024-dim YAMNet mean embeddings) ──
     mood_model = tf.keras.models.load_model(
@@ -993,9 +1038,23 @@ async def predict(request: Request, file: UploadFile = File(...)):
         # Vocal detection uses raw class scores before any pooling
         vocals, vocals_confidence = detect_vocals(class_scores_np)
 
-        # ── Mood + instrument both use 1024-dim YAMNet mean embedding ───────────
-        X_mood = yamnet_mean[np.newaxis, :]   # (1, 1024)
-        mood_preds = mood_model.predict(X_mood, verbose=0)
+        # ── Mood + genre + instrument all use 1024-dim YAMNet mean embedding ──────
+        X_yamnet = yamnet_mean[np.newaxis, :]   # (1, 1024)
+        mood_preds = mood_model.predict(X_yamnet, verbose=0)
+
+        # YAMNet genre model: trained on our specific taxonomy → better secondary/tertiary
+        yamnet_genre_ranked = []
+        if yamnet_genre_model is not None:
+            _yg_probs = yamnet_genre_model.predict(X_yamnet, verbose=0)[0]
+            _yg_scores: dict[str, float] = {}
+            for _prob, _cls in zip(_yg_probs, yamnet_genre_encoder.classes_):
+                _clean = YAMNET_GENRE_MAP.get(str(_cls))
+                if _clean is None:
+                    continue
+                if _clean not in _yg_scores or float(_prob) > _yg_scores[_clean]:
+                    _yg_scores[_clean] = float(_prob)
+            yamnet_genre_ranked = sorted(_yg_scores.items(), key=lambda x: x[1], reverse=True)
+            print(f"Top 5 YAMNet genres: {[(g, round(s,4)) for g,s in yamnet_genre_ranked[:5]]}")
 
         # ── Instrument detection via YAMNet AudioSet classes ─────────────────
         detected_instruments = detect_instruments_yamnet(class_scores_np)
@@ -1033,14 +1092,18 @@ async def predict(request: Request, file: UploadFile = File(...)):
             print(f"⚠️  Discogs genre prediction error: {_e}")
             ranked = [("Unknown", 0.0)]
 
-        primary_genre        = ranked[0][0]
-        primary_genre_conf   = ranked[0][1]
+        # Primary genre: Discogs is the most reliable signal for primary identification.
+        primary_genre      = ranked[0][0]
+        primary_genre_conf = ranked[0][1]
 
-        # Pick secondary = first ranked genre that differs from primary and clears 0.04.
-        # No ratio requirement: ratio thresholds caused Folk/Folk/Folk when secondary
-        # genres were real but weak (e.g. 0.08 vs primary 0.20 → below 60% ratio).
+        # Secondary/tertiary: prefer YAMNet genre model (trained on our catalog taxonomy).
+        # YAMNet produces calibrated predictions for our exact genre set, so it avoids
+        # the Discogs false positives (e.g. Nueva Cancion → Latin for a folk song).
+        # Fall back to Discogs if YAMNet model is unavailable or gives no signal.
         _GENRE_FLOOR = 0.04
-        _sec = [(g, s) for g, s in ranked[1:] if g != primary_genre and s >= _GENRE_FLOOR]
+        _source = yamnet_genre_ranked if yamnet_genre_ranked else ranked[1:]
+
+        _sec = [(g, s) for g, s in _source if g != primary_genre and s >= _GENRE_FLOOR]
         if _sec:
             secondary_genre      = _sec[0][0]
             secondary_genre_conf = _sec[0][1]
@@ -1048,8 +1111,8 @@ async def predict(request: Request, file: UploadFile = File(...)):
             secondary_genre      = primary_genre
             secondary_genre_conf = primary_genre_conf
 
-        _ter = [(g, s) for g, s in ranked[1:]
-                if g != primary_genre and g != secondary_genre and s >= _GENRE_FLOOR]
+        _ter = [(g, s) for g, s in _source
+                if g not in (primary_genre, secondary_genre) and s >= _GENRE_FLOOR]
         if _ter:
             tertiary_genre      = _ter[0][0]
             tertiary_genre_conf = _ter[0][1]

@@ -42,6 +42,10 @@ COPY discogs-effnet-bs64-1.pb .
 # YAMNet SavedModel bundled in repo
 COPY yamnet_model ./yamnet_model
 
+# YAMNet genre model (secondary/tertiary classification — trained on our taxonomy)
+COPY yamnet_genre_model.h5 .
+COPY yamnet_genre_model_encoder.pkl .
+
 # Mood model
 COPY yamnet_mood_model.h5 .
 COPY yamnet_mood_model_encoder.pkl .
