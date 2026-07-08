@@ -38,8 +38,8 @@ COPY requirements.txt .
 
 # Essentia Discogs-EfficientNet frozen graph
 COPY discogs-effnet-bs64-1.pb .
-# YAMNet SavedModel pre-downloaded from GCS
-COPY --from=builder /app/yamnet_model ./yamnet_model
+# YAMNet SavedModel bundled in repo
+COPY yamnet_model ./yamnet_model
 
 # Genre is now predicted directly by Essentia + discogs-effnet-bs64-1.pb (400 Discogs classes)
 
