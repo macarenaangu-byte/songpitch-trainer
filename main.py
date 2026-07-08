@@ -788,16 +788,20 @@ def focal_loss(gamma=2.0, alpha=0.25):
     return loss_fn
 
 def compute_mel_patches(y16: np.ndarray):
-    """Log-mel spectrogram patches matching Discogs-EfficientNet's expected input spec."""
+    """Log-mel spectrogram patches matching Discogs-EfficientNet's expected input spec.
+
+    Matches essentia's TensorflowPredictEffnetDiscogs internal pipeline:
+    - MelBands(normalize='unit_tri', type='power') → norm=None in librosa
+    - UnaryOperator(type='log') → natural log, no col-sum normalization
+    """
     mel = librosa.feature.melspectrogram(
         y=y16, sr=SR_DISCOGS,
         n_fft=N_FFT_D, hop_length=HOP_LEN_D,
         n_mels=N_MELS_D, fmin=FMIN_D, fmax=FMAX_D,
         power=2.0,
+        norm=None,   # unit_tri: peak filter weight = 1, no area normalization
     )  # (96, T)
-    col_sums = mel.sum(axis=0, keepdims=True)
-    mel = mel / np.maximum(col_sums, 1e-10)
-    mel = np.log(mel + 1e-9)
+    mel = np.log(mel + 1e-7)    # natural log (essentia's UnaryOperator)
     mel = mel.T.astype(np.float32)  # (T, 96)
     patches = [mel[s:s + PATCH_FRAMES] for s in range(0, len(mel) - PATCH_FRAMES + 1, PATCH_HOP)]
     return np.array(patches, dtype=np.float32) if patches else None
@@ -1031,6 +1035,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
         if discogs_session is not None:
             patches = compute_mel_patches(y16)
             if patches is not None and len(patches) > 0:
+                print(f"[Discogs] {len(patches)} patches, mel range {patches.min():.2f}..{patches.max():.2f}")
                 all_preds = []
                 for _i in range(0, len(patches), BATCH_SIZE_D):
                     batch = patches[_i:_i + BATCH_SIZE_D]
