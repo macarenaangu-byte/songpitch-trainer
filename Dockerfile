@@ -37,7 +37,7 @@ COPY main.py .
 COPY discogs_predict.py .
 COPY requirements.txt .
 
-# Discogs-EfficientNet frozen graph (loaded via tf.compat.v1.Session — no essentia needed)
+# Discogs-EfficientNet frozen graph (loaded in subprocess via essentia — never in main process)
 COPY discogs-effnet-bs64-1.pb .
 # YAMNet SavedModel bundled in repo
 COPY yamnet_model ./yamnet_model

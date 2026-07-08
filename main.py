@@ -1030,23 +1030,45 @@ async def predict(request: Request, file: UploadFile = File(...)):
 
         primary_genre        = ranked[0][0]
         primary_genre_conf   = ranked[0][1]
-        secondary_genre      = ranked[1][0] if len(ranked) > 1 else primary_genre
-        secondary_genre_conf = ranked[1][1] if len(ranked) > 1 else primary_genre_conf
-        tertiary_genre       = ranked[2][0] if len(ranked) > 2 else secondary_genre
-        tertiary_genre_conf  = ranked[2][1] if len(ranked) > 2 else secondary_genre_conf
+
+        # Only surface secondary/tertiary genres that are meaningfully close to primary.
+        # Discogs model outputs independent sigmoids, so weak secondary scores (e.g. 0.08
+        # when primary is 0.20) are noise, not real genre signals.
+        _sec_min = max(0.04, 0.60 * primary_genre_conf)
+        if len(ranked) > 1 and ranked[1][1] >= _sec_min:
+            secondary_genre      = ranked[1][0]
+            secondary_genre_conf = ranked[1][1]
+        else:
+            secondary_genre      = primary_genre
+            secondary_genre_conf = primary_genre_conf
+
+        _ter_min = max(0.04, 0.50 * primary_genre_conf)
+        if len(ranked) > 2 and ranked[2][1] >= _ter_min:
+            tertiary_genre      = ranked[2][0]
+            tertiary_genre_conf = ranked[2][1]
+        else:
+            tertiary_genre      = secondary_genre
+            tertiary_genre_conf = secondary_genre_conf
 
         # ── Top 3 moods — model knows 14, return ranked top 3 ────────────────
         mood_scores = mood_preds[0]
         top_mood_indices = np.argsort(mood_scores)[::-1][:3]
-        top_moods = [
+        _all_top_moods = [
             {
                 "mood":       str(mood_encoder.inverse_transform([i])[0]),
                 "confidence": float(mood_scores[i]),
             }
             for i in top_mood_indices
         ]
-        mood_result = top_moods[0]["mood"]
-        mood_conf   = top_moods[0]["confidence"]
+        mood_result = _all_top_moods[0]["mood"]
+        mood_conf   = _all_top_moods[0]["confidence"]
+        # Only include secondary/tertiary moods that score at least 50% of primary.
+        # 14-class softmax random baseline is ~0.071; weak secondary moods (e.g. 0.12
+        # when primary is 0.45) are model uncertainty, not a real mood signal.
+        top_moods = [_all_top_moods[0]] + [
+            m for m in _all_top_moods[1:]
+            if m["confidence"] >= 0.50 * mood_conf
+        ]
 
         # ── BPM — round to nearest integer ───────────────────────────────────
         bpm = int(round(raw_tempo))
