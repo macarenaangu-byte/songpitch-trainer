@@ -799,7 +799,7 @@ def compute_mel_patches(y16: np.ndarray):
         n_fft=N_FFT_D, hop_length=HOP_LEN_D,
         n_mels=N_MELS_D, fmin=FMIN_D, fmax=FMAX_D,
         power=2.0,
-        norm=None,   # unit_tri: peak filter weight = 1, no area normalization
+        # norm='slaney' (default) = essentia's normalize='unit_tri': 2/(fmax-fmin) per filter
     )  # (96, T)
     mel = np.log(mel + 1e-7)    # natural log (essentia's UnaryOperator)
     mel = mel.T.astype(np.float32)  # (T, 96)
