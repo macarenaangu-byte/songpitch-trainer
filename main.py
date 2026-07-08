@@ -450,7 +450,9 @@ instrument_model   = None
 instrument_encoder = None
 beatnet_estimator  = None
 _beatnet_pool      = None
-effnet_predictor   = None   # Essentia Discogs-EfficientNet — 400 genre classes
+discogs_session    = None   # TF1 compat Session for Discogs-EfficientNet frozen graph
+discogs_input_t    = None   # serving_default_melspectrogram:0
+discogs_genre_t    = None   # PartitionedCall:0 → (64, 400) genre probabilities
 
 # Librosa constants — must match extract_discogs_features.py exactly
 SR_LIBROSA  = 22050
@@ -785,13 +787,29 @@ def focal_loss(gamma=2.0, alpha=0.25):
         return tf.reduce_sum(weight * cross_entropy, axis=-1)
     return loss_fn
 
+def compute_mel_patches(y16: np.ndarray):
+    """Log-mel spectrogram patches matching Discogs-EfficientNet's expected input spec."""
+    mel = librosa.feature.melspectrogram(
+        y=y16, sr=SR_DISCOGS,
+        n_fft=N_FFT_D, hop_length=HOP_LEN_D,
+        n_mels=N_MELS_D, fmin=FMIN_D, fmax=FMAX_D,
+        power=2.0,
+    )  # (96, T)
+    col_sums = mel.sum(axis=0, keepdims=True)
+    mel = mel / np.maximum(col_sums, 1e-10)
+    mel = np.log(mel + 1e-9)
+    mel = mel.T.astype(np.float32)  # (T, 96)
+    patches = [mel[s:s + PATCH_FRAMES] for s in range(0, len(mel) - PATCH_FRAMES + 1, PATCH_HOP)]
+    return np.array(patches, dtype=np.float32) if patches else None
+
+
 # 🔥 THIS IS THE FIX: Load models AFTER the server port opens
 def _load_models_sync():
     """Load all models synchronously — runs in a thread pool so the event loop
     (and therefore /health) stays responsive during the 60-90 second load."""
     global yamnet_model, mood_model, mood_encoder
     global instrument_model, instrument_encoder
-    global effnet_predictor
+    global discogs_session, discogs_input_t, discogs_genre_t
     global _models_ready
     print("🚪 Port is open! Now loading AI brains in a background thread...")
 
@@ -801,17 +819,24 @@ def _load_models_sync():
     yamnet_model = tf.saved_model.load(os.path.join(BASE_DIR, 'yamnet_model'))
     print("✅ YAMNet loaded via tf.saved_model.load")
 
-    # ── Essentia Discogs-EfficientNet genre predictor ──────────────────────────
+    # ── Discogs-EfficientNet via TF frozen graph (pure pip-TF, no essentia) ──────
+    # essentia-tensorflow bundles its own old TF runtime which crashes when
+    # pip-tensorflow is also present (ALREADY_EXISTS: Op with name Bitcast).
+    # Loading the .pb directly with tf.compat.v1.Session avoids that conflict.
     try:
-        import essentia.standard as es
         discogs_pb = os.path.join(BASE_DIR, 'discogs-effnet-bs64-1.pb')
-        effnet_predictor = es.TensorflowPredictEffnetDiscogs(
-            graphFilename=discogs_pb,
-            output="PartitionedCall:0"
-        )
-        print("✅ Essentia Discogs-EfficientNet loaded — 400 Discogs genre classes")
+        _dg = tf.Graph()
+        with _dg.as_default():
+            _gdef = tf.compat.v1.GraphDef()
+            with open(discogs_pb, 'rb') as _fh:
+                _gdef.ParseFromString(_fh.read())
+            tf.import_graph_def(_gdef, name='')
+        discogs_session = tf.compat.v1.Session(graph=_dg)
+        discogs_input_t = _dg.get_tensor_by_name('serving_default_melspectrogram:0')
+        discogs_genre_t = _dg.get_tensor_by_name('PartitionedCall:0')
+        print("✅ Discogs-EfficientNet loaded via TF frozen graph — 400 genre classes")
     except Exception as e:
-        print(f"❌ Essentia failed to load: {type(e).__name__}: {e}")
+        print(f"❌ Discogs model failed to load: {type(e).__name__}: {e}")
         print("⚠️  Genre prediction will be unavailable this session")
 
     # ── Mood model (trained on 1024-dim YAMNet mean embeddings) ──
@@ -1002,28 +1027,39 @@ async def predict(request: Request, file: UploadFile = File(...)):
         # ── Instrument detection via YAMNet AudioSet classes ─────────────────
         detected_instruments = detect_instruments_yamnet(class_scores_np)
 
-        # ── Genre prediction via Essentia Discogs-EfficientNet (400 classes) ───
-        if effnet_predictor is not None:
-            import essentia.standard as es
-            audio_es = es.MonoLoader(filename=temp_path, sampleRate=16000)()
-            genre_patch_preds = effnet_predictor(audio_es)   # (N_patches, 400) sigmoid per patch
-            genre_probs = np.mean(genre_patch_preds, axis=0) # (400,) averaged over patches
+        # ── Genre prediction via Discogs-EfficientNet TF frozen graph (400 classes) ──
+        if discogs_session is not None:
+            patches = compute_mel_patches(y16)
+            if patches is not None and len(patches) > 0:
+                all_preds = []
+                for _i in range(0, len(patches), BATCH_SIZE_D):
+                    batch = patches[_i:_i + BATCH_SIZE_D]
+                    actual = len(batch)
+                    if actual < BATCH_SIZE_D:
+                        pad = np.zeros((BATCH_SIZE_D - actual, PATCH_FRAMES, N_MELS_D), dtype=np.float32)
+                        batch = np.concatenate([batch, pad], axis=0)
+                    preds = discogs_session.run(discogs_genre_t, {discogs_input_t: batch})
+                    all_preds.append(preds[:actual])
+                genre_probs = np.mean(np.concatenate(all_preds, axis=0), axis=0)  # (400,)
 
-            genre_scores: dict[str, float] = {}
-            for _i, _prob in enumerate(genre_probs.tolist()):
-                _label = DISCOGS400_CLASSES[_i]
-                _clean = DISCOGS400_TO_GENRE.get(_label)
-                if _clean is None:
-                    continue
-                if _clean not in genre_scores or _prob > genre_scores[_clean]:
-                    genre_scores[_clean] = float(_prob)
+                genre_scores: dict[str, float] = {}
+                for _i, _prob in enumerate(genre_probs.tolist()):
+                    _label = DISCOGS400_CLASSES[_i]
+                    _clean = DISCOGS400_TO_GENRE.get(_label)
+                    if _clean is None:
+                        continue
+                    if _clean not in genre_scores or _prob > genre_scores[_clean]:
+                        genre_scores[_clean] = float(_prob)
 
-            ranked = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
-            top10_raw = sorted(zip(genre_probs.tolist(), DISCOGS400_CLASSES), reverse=True)[:10]
-            print(f"Top 10 Discogs labels: {[(lbl, round(p,4)) for p,lbl in top10_raw]}")
-            print(f"Top 5 genre candidates: {[(g, round(s,4)) for g,s in ranked[:5]]}")
+                ranked = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
+                top10_raw = sorted(zip(genre_probs.tolist(), DISCOGS400_CLASSES), reverse=True)[:10]
+                print(f"Top 10 Discogs labels: {[(lbl, round(p,4)) for p,lbl in top10_raw]}")
+                print(f"Top 5 genre candidates: {[(g, round(s,4)) for g,s in ranked[:5]]}")
+            else:
+                print("⚠️  No mel patches extracted from audio — returning unknown genre")
+                ranked = [("Unknown", 0.0)]
         else:
-            print("⚠️  Essentia unavailable — returning unknown genre")
+            print("⚠️  Discogs model unavailable — returning unknown genre")
             ranked = [("Unknown", 0.0)]
 
         primary_genre        = ranked[0][0]

@@ -36,12 +36,10 @@ COPY --from=builder /install /usr/local
 COPY main.py .
 COPY requirements.txt .
 
-# Essentia Discogs-EfficientNet frozen graph
+# Discogs-EfficientNet frozen graph (loaded via tf.compat.v1.Session — no essentia needed)
 COPY discogs-effnet-bs64-1.pb .
 # YAMNet SavedModel bundled in repo
 COPY yamnet_model ./yamnet_model
-
-# Genre is now predicted directly by Essentia + discogs-effnet-bs64-1.pb (400 Discogs classes)
 
 # Mood model
 COPY yamnet_mood_model.h5 .
