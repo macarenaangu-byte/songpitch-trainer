@@ -52,6 +52,12 @@ COPY instrument_model_encoder.pkl .
 
 # Cloud Run sets PORT env var (default 8080)
 ENV PORT=8080
+# Disable oneDNN (Intel Deep Neural Network library) in the main TF process.
+# When oneDNN is on, it enables FPE exception trapping in native threads; this
+# causes SIGFPE (signal 8) to kill uvicorn when librosa's FFT encounters a
+# denormal value during beat/tempo estimation. Must be set before TF imports.
+ENV TF_ENABLE_ONEDNN_OPTS=0
+ENV TF_CPP_MIN_LOG_LEVEL=2
 
 # Use a non-root user for security
 RUN useradd -m appuser && chown -R appuser /app

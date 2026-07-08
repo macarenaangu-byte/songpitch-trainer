@@ -939,6 +939,11 @@ async def predict(request: Request, file: UploadFile = File(...)):
         contrast  = librosa.feature.spectral_contrast(y=y22, sr=SR_LIBROSA, hop_length=HOP_LENGTH)
         rms       = librosa.feature.rms(y=y22, hop_length=HOP_LENGTH)[0]
         onset_env = librosa.onset.onset_strength(y=y22, sr=SR_LIBROSA, hop_length=HOP_LENGTH)
+        # Sanitize before native FFT: NaN/inf/zero in onset_env can trigger SIGFPE
+        # inside MKL/scipy when TF's oneDNN has enabled FPE exception trapping.
+        onset_env = np.nan_to_num(onset_env, nan=0.0, posinf=0.0, neginf=0.0)
+        if not np.any(onset_env > 0):
+            onset_env = np.ones(len(onset_env), dtype=np.float32)
         raw_tempo = float(librosa.beat.tempo(onset_envelope=onset_env, sr=SR_LIBROSA, hop_length=HOP_LENGTH)[0])
 
         # ── Musical key detection — uses chromagram already computed above ──────
