@@ -335,7 +335,7 @@ DISCOGS400_TO_GENRE = {
     "Hip Hop---Thug Rap": "Hip-Hop", "Hip Hop---Trap": "Trap",
     "Hip Hop---Trip Hop": "Ambient", "Hip Hop---Turntablism": "Hip-Hop",
     # Jazz
-    "Jazz---Afro-Cuban Jazz": "Jazz", "Jazz---Afrobeat": "Jazz",
+    "Jazz---Afro-Cuban Jazz": "Jazz", "Jazz---Afrobeat": "Afrobeats",
     "Jazz---Avant-garde Jazz": "Jazz", "Jazz---Big Band": "Jazz",
     "Jazz---Bop": "Jazz", "Jazz---Bossa Nova": "Jazz",
     "Jazz---Contemporary Jazz": "Jazz", "Jazz---Cool Jazz": "Jazz",
@@ -359,7 +359,7 @@ DISCOGS400_TO_GENRE = {
     "Latin---Guaracha": "Latin", "Latin---MPB": "Latin",
     "Latin---Mambo": "Latin", "Latin---Mariachi": "Latin",
     "Latin---Merengue": "Merengue", "Latin---Norteño": "Latin",
-    "Latin---Nueva Cancion": "Latin", "Latin---Pachanga": "Latin",
+    "Latin---Nueva Cancion": "Folk", "Latin---Pachanga": "Latin",
     "Latin---Porro": "Latin", "Latin---Ranchera": "Latin",
     "Latin---Reggaeton": "Reggaetón", "Latin---Rumba": "Latin",
     "Latin---Salsa": "Latin", "Latin---Samba": "Latin",
@@ -1097,8 +1097,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
         primary_genre_conf = ranked[0][1]
 
         # Secondary/tertiary: prefer YAMNet genre model (trained on our catalog taxonomy).
-        # YAMNet produces calibrated predictions for our exact genre set, so it avoids
-        # the Discogs false positives (e.g. Nueva Cancion → Latin for a folk song).
+        # YAMNet produces calibrated predictions for our exact genre set.
         # Fall back to Discogs if YAMNet model is unavailable or gives no signal.
         _GENRE_FLOOR = 0.04
         _source = yamnet_genre_ranked if yamnet_genre_ranked else ranked[1:]
