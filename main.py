@@ -449,7 +449,7 @@ YAMNET_GENRE_MAP = {
     'genre_Acoustic': 'Acoustic',         'genre_Afrobeats': 'Afrobeats',
     'genre_Alternative_Rock': 'Alternative Rock', 'genre_Ambient': 'Ambient',
     'genre_Bachata': 'Bachata',           'genre_Baroque': 'Baroque',
-    'genre_Blues': 'Blues',               'genre_Bossa_Nova': 'Latin',
+    'genre_Blues': 'Blues',               'genre_Bossa_Nova': 'Acoustic',
     'genre_Childrens': "Children's",      'genre_Cinematic': 'Cinematic',
     'genre_Classical': 'Classical',       'genre_Corporate': 'Corporate',
     'genre_Country': 'Country',           'genre_Cumbia': 'Cumbia',
