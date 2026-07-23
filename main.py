@@ -4,6 +4,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import tensorflow as tf
+tf.config.set_visible_devices([], 'GPU')  # force CPU — Metal segfaults on Apple Silicon during inference
 import librosa
 import numpy as np
 import pickle
@@ -270,14 +271,14 @@ DISCOGS400_TO_GENRE = {
     "Electronic---Minimal": "Electronic", "Electronic---Minimal Techno": "Techno",
     "Electronic---Modern Classical": "Classical", "Electronic---Musique Concrète": "Electronic",
     "Electronic---Neofolk": "Folk", "Electronic---New Age": "New Age",
-    "Electronic---New Beat": "Electronic", "Electronic---New Wave": "Electronic",
+    "Electronic---New Beat": "Electronic", "Electronic---New Wave": "New Wave",
     "Electronic---Noise": "Electronic", "Electronic---Nu-Disco": "Electronic",
     "Electronic---Power Electronics": "Electronic", "Electronic---Progressive Breaks": "Electronic",
     "Electronic---Progressive House": "House", "Electronic---Progressive Trance": "Trance",
     "Electronic---Psy-Trance": "Trance", "Electronic---Rhythmic Noise": "Electronic",
     "Electronic---Schranz": "Techno", "Electronic---Sound Collage": "Electronic",
     "Electronic---Speed Garage": "Electronic", "Electronic---Speedcore": "Electronic",
-    "Electronic---Synth-pop": "Electronic", "Electronic---Synthwave": "Synthwave",
+    "Electronic---Synth-pop": "Synth-Pop", "Electronic---Synthwave": "Synthwave",
     "Electronic---Tech House": "House", "Electronic---Tech Trance": "Trance",
     "Electronic---Techno": "Techno", "Electronic---Trance": "Trance",
     "Electronic---Tribal": "Electronic", "Electronic---Tribal House": "House",
@@ -313,12 +314,12 @@ DISCOGS400_TO_GENRE = {
     "Folk, World, & Country---Éntekhno": "World Music",
     # Funk / Soul
     "Funk / Soul---Afrobeat": "Afrobeats", "Funk / Soul---Boogie": "Funk/Soul",
-    "Funk / Soul---Contemporary R&B": "R&B", "Funk / Soul---Disco": "Funk/Soul",
+    "Funk / Soul---Contemporary R&B": "R&B", "Funk / Soul---Disco": "Disco",
     "Funk / Soul---Free Funk": "Funk/Soul", "Funk / Soul---Funk": "Funk/Soul",
     "Funk / Soul---Gospel": "Gospel", "Funk / Soul---Neo Soul": "R&B",
     "Funk / Soul---New Jack Swing": "R&B", "Funk / Soul---P.Funk": "Funk/Soul",
     "Funk / Soul---Psychedelic": "Funk/Soul", "Funk / Soul---Rhythm & Blues": "R&B",
-    "Funk / Soul---Soul": "Funk/Soul", "Funk / Soul---Swingbeat": "R&B",
+    "Funk / Soul---Soul": "Soul", "Funk / Soul---Swingbeat": "R&B",
     "Funk / Soul---UK Street Soul": "R&B",
     # Hip Hop
     "Hip Hop---Bass Music": "Hip-Hop", "Hip Hop---Boom Bap": "Hip-Hop",
@@ -336,8 +337,8 @@ DISCOGS400_TO_GENRE = {
     "Hip Hop---Trip Hop": "Ambient", "Hip Hop---Turntablism": "Hip-Hop",
     # Jazz
     "Jazz---Afro-Cuban Jazz": "Jazz", "Jazz---Afrobeat": "Afrobeats",
-    "Jazz---Avant-garde Jazz": "Jazz", "Jazz---Big Band": "Jazz",
-    "Jazz---Bop": "Jazz", "Jazz---Bossa Nova": "Jazz",
+    "Jazz---Avant-garde Jazz": "Jazz", "Jazz---Big Band": "Big Band",
+    "Jazz---Bop": "Jazz", "Jazz---Bossa Nova": "Bossa Nova",
     "Jazz---Contemporary Jazz": "Jazz", "Jazz---Cool Jazz": "Jazz",
     "Jazz---Dixieland": "Jazz", "Jazz---Easy Listening": "Jazz",
     "Jazz---Free Improvisation": "Jazz", "Jazz---Free Jazz": "Jazz",
@@ -346,23 +347,23 @@ DISCOGS400_TO_GENRE = {
     "Jazz---Jazz-Rock": "Jazz", "Jazz---Latin Jazz": "Jazz",
     "Jazz---Modal": "Jazz", "Jazz---Post Bop": "Jazz",
     "Jazz---Ragtime": "Jazz", "Jazz---Smooth Jazz": "Jazz",
-    "Jazz---Soul-Jazz": "Jazz", "Jazz---Space-Age": "Jazz", "Jazz---Swing": "Jazz",
+    "Jazz---Soul-Jazz": "Jazz", "Jazz---Space-Age": "Jazz", "Jazz---Swing": "Swing",
     # Latin
     "Latin---Afro-Cuban": "Latin", "Latin---Baião": "Latin",
     "Latin---Batucada": "Latin", "Latin---Beguine": "Latin",
-    "Latin---Bolero": "Latin", "Latin---Boogaloo": "Latin",
-    "Latin---Bossanova": "Latin", "Latin---Cha-Cha": "Latin",
+    "Latin---Bolero": "Bolero", "Latin---Boogaloo": "Latin",
+    "Latin---Bossanova": "Bossa Nova", "Latin---Cha-Cha": "Cha-Cha",
     "Latin---Charanga": "Latin", "Latin---Compas": "Latin",
     "Latin---Cubano": "Latin", "Latin---Cumbia": "Cumbia",
     "Latin---Descarga": "Latin", "Latin---Forró": "Latin",
     "Latin---Guaguancó": "Latin", "Latin---Guajira": "Latin",
     "Latin---Guaracha": "Latin", "Latin---MPB": "Latin",
-    "Latin---Mambo": "Latin", "Latin---Mariachi": "Latin",
+    "Latin---Mambo": "Mambo", "Latin---Mariachi": "Latin",
     "Latin---Merengue": "Merengue", "Latin---Norteño": "Latin",
     "Latin---Nueva Cancion": "Folk", "Latin---Pachanga": "Latin",
     "Latin---Porro": "Latin", "Latin---Ranchera": "Latin",
     "Latin---Reggaeton": "Reggaetón", "Latin---Rumba": "Latin",
-    "Latin---Salsa": "Latin", "Latin---Samba": "Latin",
+    "Latin---Salsa": "Salsa", "Latin---Samba": "Samba",
     "Latin---Son": "Latin", "Latin---Son Montuno": "Latin",
     "Latin---Tango": "Tango", "Latin---Tejano": "Latin", "Latin---Vallenato": "Latin",
     # Non-Music — skip
@@ -374,7 +375,7 @@ DISCOGS400_TO_GENRE = {
     "Non-Music---Radioplay": None, "Non-Music---Religious": None,
     "Non-Music---Spoken Word": None,
     # Pop
-    "Pop---Ballad": "Pop", "Pop---Bollywood": "World Music",
+    "Pop---Ballad": "Ballad", "Pop---Bollywood": "World Music",
     "Pop---Bubblegum": "Pop", "Pop---Chanson": "Pop",
     "Pop---City Pop": "Pop", "Pop---Europop": "Pop",
     "Pop---Indie Pop": "Indie", "Pop---J-pop": "Pop",
@@ -387,7 +388,7 @@ DISCOGS400_TO_GENRE = {
     "Reggae---Dub": "Reggae", "Reggae---Lovers Rock": "Reggae",
     "Reggae---Ragga": "Reggae", "Reggae---Reggae": "Reggae",
     "Reggae---Reggae-Pop": "Reggae", "Reggae---Rocksteady": "Reggae",
-    "Reggae---Roots Reggae": "Reggae", "Reggae---Ska": "Reggae",
+    "Reggae---Roots Reggae": "Reggae", "Reggae---Ska": "Ska",
     "Reggae---Soca": "Reggae",
     # Rock
     "Rock---AOR": "Rock", "Rock---Acid Rock": "Rock",
@@ -415,7 +416,7 @@ DISCOGS400_TO_GENRE = {
     "Rock---Lounge": "Jazz", "Rock---Math Rock": "Progressive Rock",
     "Rock---Melodic Death Metal": "Metal", "Rock---Melodic Hardcore": "Punk",
     "Rock---Metalcore": "Metal", "Rock---Mod": "Rock",
-    "Rock---Neofolk": "Folk", "Rock---New Wave": "Rock",
+    "Rock---Neofolk": "Folk", "Rock---New Wave": "New Wave",
     "Rock---No Wave": "Rock", "Rock---Noise": "Rock",
     "Rock---Noisecore": "Metal", "Rock---Nu Metal": "Metal",
     "Rock---Oi": "Punk", "Rock---Parody": "Rock",
@@ -428,7 +429,7 @@ DISCOGS400_TO_GENRE = {
     "Rock---Psychedelic Rock": "Rock", "Rock---Psychobilly": "Rock",
     "Rock---Pub Rock": "Rock", "Rock---Punk": "Punk",
     "Rock---Rock & Roll": "Rock", "Rock---Rockabilly": "Rock",
-    "Rock---Shoegaze": "Indie", "Rock---Ska": "Reggae",
+    "Rock---Shoegaze": "Indie", "Rock---Ska": "Ska",
     "Rock---Sludge Metal": "Metal", "Rock---Soft Rock": "Pop",
     "Rock---Southern Rock": "Rock", "Rock---Space Rock": "Rock",
     "Rock---Speed Metal": "Metal", "Rock---Stoner Rock": "Rock",
@@ -449,7 +450,7 @@ YAMNET_GENRE_MAP = {
     'genre_Acoustic': 'Acoustic',         'genre_Afrobeats': 'Afrobeats',
     'genre_Alternative_Rock': 'Alternative Rock', 'genre_Ambient': 'Ambient',
     'genre_Bachata': 'Bachata',           'genre_Baroque': 'Baroque',
-    'genre_Blues': 'Blues',               'genre_Bossa_Nova': 'Acoustic',
+    'genre_Blues': 'Blues',               'genre_Bossa_Nova': 'Bossa Nova',
     'genre_Childrens': "Children's",      'genre_Cinematic': 'Cinematic',
     'genre_Classical': 'Classical',       'genre_Corporate': 'Corporate',
     'genre_Country': 'Country',           'genre_Cumbia': 'Cumbia',
@@ -469,11 +470,13 @@ YAMNET_GENRE_MAP = {
     'genre_Progressive_Rock': 'Progressive Rock', 'genre_Punk': 'Punk',
     'genre_R&B': 'R&B',                   'genre_Reggae': 'Reggae',
     'genre_Reggaeton': 'Reggaetón',       'genre_Rock': 'Rock',
-    'genre_Salsa': 'Latin',               'genre_Samba': 'Latin',
+    'genre_Salsa': 'Salsa',               'genre_Samba': 'Samba',
     'genre_Synthwave': 'Synthwave',       'genre_Tango': 'Tango',
     'genre_Techno': 'Techno',             'genre_Trance': 'Trance',
     'genre_Trap': 'Trap',                 'genre_Trap_Latino': 'Trap Latino',
     'genre_Urbano': 'Urbano',             'genre_World_Music': 'World Music',
+    'genre_Latin_Folk': 'Latin Folk',     'genre_Waltz': 'Waltz',
+    'genre_Ballad': 'Ballad',             'genre_Bolero': 'Bolero',
 }
 
 # 1. GLOBAL VARIABLES FOR AI MODELS
@@ -864,14 +867,17 @@ def _load_models_sync():
     # ── Instrument model (trained on 1024-dim YAMNet embeddings) ──
     inst_model_path = os.path.join(BASE_DIR, 'instrument_model.h5')
     if os.path.exists(inst_model_path):
-        instrument_model = tf.keras.models.load_model(
-            inst_model_path,
-            custom_objects={'loss_fn': focal_loss(gamma=2.0, alpha=0.25)},
-            compile=False,
-        )
-        with open(os.path.join(BASE_DIR, 'instrument_model_encoder.pkl'), 'rb') as f:
-            instrument_encoder = pickle.load(f)
-        print("✅ Instrument model loaded")
+        try:
+            instrument_model = tf.keras.models.load_model(
+                inst_model_path,
+                custom_objects={'loss_fn': focal_loss(gamma=2.0, alpha=0.25)},
+                compile=False,
+            )
+            with open(os.path.join(BASE_DIR, 'instrument_model_encoder.pkl'), 'rb') as f:
+                instrument_encoder = pickle.load(f)
+            print("✅ Instrument model loaded")
+        except Exception as e:
+            print(f"⚠️  Instrument model failed to load ({e.__class__.__name__}) — instrument detection disabled")
 
     print("✅ All AI Brains successfully loaded and ready for traffic!")
 
@@ -891,12 +897,14 @@ def _load_models_sync():
 
 @app.on_event("startup")
 async def load_all_models():
-    """Kick off model loading in a thread so the HTTP server (and /health) stays
-    responsive immediately. Cloud Run startup probe can reach /health right away
-    and will keep getting 503 until models finish, then 200."""
-    import asyncio
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, _load_models_sync)
+    """Load models. In production (Cloud Run), runs in a thread for fast /health response.
+    Locally, runs synchronously to avoid TF Metal cross-thread segfaults on Apple Silicon."""
+    import asyncio, os
+    if os.environ.get("PORT") == "8081":  # local testing only
+        _load_models_sync()
+    else:
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, _load_models_sync)
 
 
 @app.get("/health")
@@ -912,14 +920,17 @@ async def health():
     return {"status": "ok"}
 
 # OpenAI client for AI Brief Writer
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+try:
+    openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+except Exception:
+    openai_client = None
 
 BRIEF_SYSTEM_PROMPT = """You are a music industry brief writer for SongPitch, a platform connecting composers with music executives.
 
 Given rough notes from a music executive, generate a polished opportunity description and suggest appropriate genres, moods, and project type.
 
 AVAILABLE GENRES (use ONLY these exact names):
-Classical, Jazz, Electronic, Hip-Hop, Pop, Film Score, Ambient, R&B, Afrobeats, World Music, Musical Theatre, Rock, Country, Folk, Blues, Reggae, Latin, K-Pop, EDM, Indie, Gospel, Lo-Fi, Corporate, Cinematic, Children's, Funk/Soul, Trap, New Age, Acoustic, House, Metal, Bachata, Cumbia, Merengue, Tango, Flamenco, Trap Latino, Reggaetón, Dancehall, Techno, Trance, Drum & Bass, Dubstep, Synthwave, Punk, Hard Rock, Alternative Rock, Grunge, Progressive Rock, Opera, Baroque, HyperPop, Urbano
+Classical, Jazz, Electronic, Hip-Hop, Pop, Film Score, Ambient, R&B, Afrobeats, World Music, Musical Theatre, Rock, Country, Folk, Blues, Reggae, Latin, K-Pop, EDM, Indie, Gospel, Lo-Fi, Corporate, Cinematic, Children's, Funk/Soul, Trap, New Age, Acoustic, House, Metal, Bachata, Cumbia, Merengue, Tango, Flamenco, Trap Latino, Reggaetón, Dancehall, Techno, Trance, Drum & Bass, Dubstep, Synthwave, Punk, Hard Rock, Alternative Rock, Grunge, Progressive Rock, Opera, Baroque, HyperPop, Urbano, Latin Folk, Waltz, Ballad, Bolero, Salsa, Samba, Bossa Nova, Mambo, Cha-Cha, Swing, Big Band, Synth-Pop, New Wave, Soul, Disco, Ska
 
 AVAILABLE MOODS (use ONLY these exact names):
 Uplifting, Melancholic, Energetic, Calm, Dark, Romantic, Epic, Playful, Aggressive, Dreamy, Nostalgic, Mysterious, Triumphant, Tense
@@ -942,7 +953,7 @@ Return format:
   "project_type": "..."
 }"""
 
-ALLOWED_GENRES = {"Classical", "Jazz", "Electronic", "Hip-Hop", "Pop", "Film Score", "Ambient", "R&B", "Afrobeats", "World Music", "Musical Theatre", "Rock", "Country", "Folk", "Blues", "Reggae", "Latin", "K-Pop", "EDM", "Indie", "Gospel", "Lo-Fi", "Corporate", "Cinematic", "Children's", "Funk/Soul", "Trap", "New Age", "Acoustic", "House", "Metal", "Bachata", "Cumbia", "Merengue", "Tango", "Flamenco", "Trap Latino", "Reggaetón", "Dancehall", "Techno", "Trance", "Drum & Bass", "Dubstep", "Synthwave", "Punk", "Hard Rock", "Alternative Rock", "Grunge", "Progressive Rock", "Opera", "Baroque", "HyperPop", "Urbano"}
+ALLOWED_GENRES = {"Classical", "Jazz", "Electronic", "Hip-Hop", "Pop", "Film Score", "Ambient", "R&B", "Afrobeats", "World Music", "Musical Theatre", "Rock", "Country", "Folk", "Blues", "Reggae", "Latin", "K-Pop", "EDM", "Indie", "Gospel", "Lo-Fi", "Corporate", "Cinematic", "Children's", "Funk/Soul", "Trap", "New Age", "Acoustic", "House", "Metal", "Bachata", "Cumbia", "Merengue", "Tango", "Flamenco", "Trap Latino", "Reggaetón", "Dancehall", "Techno", "Trance", "Drum & Bass", "Dubstep", "Synthwave", "Punk", "Hard Rock", "Alternative Rock", "Grunge", "Progressive Rock", "Opera", "Baroque", "HyperPop", "Urbano", "Latin Folk", "Waltz", "Ballad", "Bolero", "Salsa", "Samba", "Bossa Nova", "Mambo", "Cha-Cha", "Swing", "Big Band", "Synth-Pop", "New Wave", "Soul", "Disco", "Ska"}
 ALLOWED_MOODS = {"Uplifting", "Melancholic", "Energetic", "Calm", "Dark", "Romantic", "Epic", "Playful", "Aggressive", "Dreamy", "Nostalgic", "Mysterious", "Triumphant", "Tense"}
 
 class BriefRequest(BaseModel):
@@ -1096,11 +1107,11 @@ async def predict(request: Request, file: UploadFile = File(...)):
         primary_genre      = ranked[0][0]
         primary_genre_conf = ranked[0][1]
 
-        # Secondary/tertiary: prefer YAMNet genre model (trained on our catalog taxonomy).
-        # YAMNet produces calibrated predictions for our exact genre set.
-        # Fall back to Discogs if YAMNet model is unavailable or gives no signal.
+        # Secondary/tertiary: use Discogs top-2/3 — Discogs-EfficientNet is trained on
+        # music spectrograms and knows 400 genre classes. YAMNet was designed for audio
+        # events (sirens, dogs, rain) and gives poor music genre discrimination.
         _GENRE_FLOOR = 0.04
-        _source = yamnet_genre_ranked if yamnet_genre_ranked else ranked[1:]
+        _source = ranked[1:]
 
         _sec = [(g, s) for g, s in _source if g != primary_genre and s >= _GENRE_FLOOR]
         if _sec:
