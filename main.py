@@ -1107,11 +1107,13 @@ async def predict(request: Request, file: UploadFile = File(...)):
         primary_genre      = ranked[0][0]
         primary_genre_conf = ranked[0][1]
 
-        # Secondary/tertiary: use Discogs top-2/3 — Discogs-EfficientNet is trained on
-        # music spectrograms and knows 400 genre classes. YAMNet was designed for audio
-        # events (sirens, dogs, rain) and gives poor music genre discrimination.
+        # Secondary/tertiary: use custom YAMNet genre classifier (retrained on our catalog)
+        # as the primary source — constrained to our taxonomy, avoids the low-confidence
+        # noise in Discogs ranks 2-400 (400 classes means plausible-sounding wrong answers
+        # easily clear the 4% floor). Fall back to Discogs top-2/3 only if YAMNet gives
+        # no signal.
         _GENRE_FLOOR = 0.04
-        _source = ranked[1:]
+        _source = yamnet_genre_ranked if yamnet_genre_ranked else ranked[1:]
 
         _sec = [(g, s) for g, s in _source if g != primary_genre and s >= _GENRE_FLOOR]
         if _sec:
