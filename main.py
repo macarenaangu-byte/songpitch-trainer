@@ -6,6 +6,7 @@ from slowapi.errors import RateLimitExceeded
 import tensorflow as tf
 tf.config.set_visible_devices([], 'GPU')  # force CPU — Metal segfaults on Apple Silicon during inference
 import librosa
+import soundfile as sf
 import numpy as np
 import pickle
 import os
@@ -973,6 +974,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
     if len(contents) > MAX_UPLOAD_SIZE_BYTES:
         raise HTTPException(status_code=413, detail=f"File too large. Maximum size is {MAX_UPLOAD_SIZE_MB}MB.")
     temp_path = f"temp_{file.filename}"
+    trunc_path = None
     with open(temp_path, "wb") as buffer:
         buffer.write(contents)
 
@@ -1071,10 +1073,15 @@ async def predict(request: Request, file: UploadFile = File(...)):
         detected_instruments = detect_instruments_yamnet(class_scores_np)
 
         # ── Genre via Discogs-EfficientNet subprocess (essentia isolated from pip-TF) ──
+        # Write the already-truncated 30s audio to a WAV so discogs only processes
+        # that clip — avoids timeouts on long uploads where the full file can take
+        # 30-60s for essentia to decode and embed.
+        trunc_path = temp_path + "_30s.wav"
+        sf.write(trunc_path, y22, SR_LIBROSA)
         try:
             _env = {**os.environ, 'TF_CPP_MIN_LOG_LEVEL': '3', 'TF_ENABLE_ONEDNN_OPTS': '0'}
             _proc = subprocess.run(
-                ['python3', DISCOGS_SCRIPT, temp_path, DISCOGS_PB],
+                ['python3', DISCOGS_SCRIPT, trunc_path, DISCOGS_PB],
                 capture_output=True, text=True, timeout=30, env=_env,
             )
             if _proc.returncode == 0 and _proc.stdout.strip():
@@ -1298,6 +1305,8 @@ async def predict(request: Request, file: UploadFile = File(...)):
 
         if os.path.exists(temp_path):
             os.remove(temp_path)
+        if trunc_path and os.path.exists(trunc_path):
+            os.remove(trunc_path)
 
         return {
             # ── Genre (primary + secondary + tertiary) ──
@@ -1338,6 +1347,8 @@ async def predict(request: Request, file: UploadFile = File(...)):
     except Exception as e:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+        if trunc_path and os.path.exists(trunc_path):
+            os.remove(trunc_path)
         return {"error": str(e)}
 
 @app.post("/transcribe")
