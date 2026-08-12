@@ -1069,8 +1069,19 @@ async def predict(request: Request, file: UploadFile = File(...)):
             yamnet_genre_ranked = sorted(_yg_scores.items(), key=lambda x: x[1], reverse=True)
             print(f"Top 5 YAMNet genres: {[(g, round(s,4)) for g,s in yamnet_genre_ranked[:5]]}")
 
-        # ── Instrument detection via YAMNet AudioSet classes ─────────────────
-        detected_instruments = detect_instruments_yamnet(class_scores_np)
+        # ── Instrument detection: custom model first, YAMNet AudioSet fallback ──
+        detected_instruments = []
+        if instrument_model is not None and instrument_encoder is not None:
+            _inst_probs = instrument_model.predict(X_yamnet, verbose=0)[0]
+            _inst_pairs = sorted(zip(_inst_probs.tolist(), instrument_encoder.classes_), reverse=True)
+            print(f"Top 3 instrument predictions: {[(c, round(p,3)) for p,c in _inst_pairs[:3]]}")
+            detected_instruments = [
+                {"instrument": cls, "confidence": round(prob, 3)}
+                for prob, cls in _inst_pairs
+                if prob >= 0.08
+            ]
+        if not detected_instruments:
+            detected_instruments = detect_instruments_yamnet(class_scores_np)
 
         # ── Genre via Discogs-EfficientNet subprocess (essentia isolated from pip-TF) ──
         # Write the already-truncated 30s audio to a WAV so discogs only processes
